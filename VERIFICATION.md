@@ -95,6 +95,21 @@ The Chrome identity refusal was deliberately **not** exercised live, because
 the user forbids opening Chrome. In the post-fix session, Claude also declined
 a `get_app_state("Google Chrome")` request on its own, citing the user's rule.
 
+## Real-world acceptance (Claude Haiku 5.5, separate T3 Claude Code session)
+
+A fresh T3-delegated Claude Code child on the work profile (shim pid 35507) used
+only the bridge tools for a trip-budget task:
+
+- `list_apps` worked.
+- In Calculator, which it cold-launched in the background, it computed
+  128.50 + 64.25 + 39.90 = **232.65** by clicking buttons.
+- It wrote the line items, the total, and `café ☕ 日本 ✓` into a scratch TextEdit
+  document. The text matched byte-for-byte when read back with AppleScript.
+- An invalid element returned a clean `-10005` error and the session recovered.
+- Cursor and frontmost app (T3 Code) were identical before and after.
+- Cleanup was complete. The shim log shows no failures.
+- Verdict: **PASS**.
+
 ## Remaining limits
 
 - **The ChatGPT app must stay installed.** Its main process does not need to
