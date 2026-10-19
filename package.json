@@ -1,17 +1,14 @@
 {
   "name": "openai-cua-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Use the OpenAI/Codex computer-use engine from Claude Code on macOS, via an app-trust worker + stdio shim.",
+  "description": "Use OpenAI's installed computer-use engine from Claude Code on macOS, without the ChatGPT app running and without calling any OpenAI model.",
   "type": "module",
-  "bin": {
-    "openai-cua-worker": "src/worker.mjs",
-    "openai-cua-shim": "src/shim.mjs"
-  },
+  "bin": { "openai-cua-shim": "src/shim.mjs" },
   "scripts": {
-    "install-bridge": "node install.mjs",
-    "worker": "node src/worker.mjs",
-    "shim": "node src/shim.mjs"
+    "check": "for f in src/*.mjs install.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
+    "doctor": "node src/shim.mjs --doctor",
+    "install-bridge": "node install.mjs"
   },
   "engines": { "node": ">=18" },
   "license": "MIT"
