@@ -6,7 +6,7 @@
 // Chromium tab, a target drops mouse and key input until a screenshot has drawn
 // a frame of its current document; navigation reports Page.frameNavigated.
 export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://mail.example/inbox" }] } = {}) {
-  const calls = [];
+  const calls = [], hooks = {};
   const targets = new Map();
   let n = 0, sockets = new Set();
   const emit = (msg) => { for (const ws of sockets) ws.send(JSON.stringify(msg)); };
@@ -37,7 +37,7 @@ export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://m
     switch (m.method) {
       case "Browser.getVersion": return reply({ product: "Chrome/141.0.0.0", userAgent: "Helium" });
       case "Target.setDiscoverTargets": return reply({});
-      case "Target.getTargets": return reply({ targetInfos: [...targets.values()].map(info) });
+      case "Target.getTargets": hooks.getTargets?.(); return reply({ targetInfos: [...targets.values()].map(info) });
       case "Target.createTarget": { // like Chromium: a finished about:blank first, the URL commits later
         const nt = addTarget("about:blank", "about:blank");
         if (p.url !== "about:blank") setTimeout(() => { nt.url = p.url; nt.title = `Page ${p.url}`; }, 60);
@@ -106,7 +106,7 @@ export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://m
     },
   });
   return {
-    port: server.port, calls, targets,
+    port: server.port, calls, targets, hooks, emit,
     endpoint: { host: "127.0.0.1", port: server.port, path: "/devtools/browser/fake", source: "fake" },
     count: (method) => calls.filter((c) => c.method === method).length,
     stop: () => server.stop(true),

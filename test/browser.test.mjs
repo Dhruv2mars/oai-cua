@@ -131,6 +131,13 @@ describe("browser: tools against fake Helium", () => {
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain(`ref e10 is not in ${tab}'s latest snapshot`);
     expect(fake.count("Input.dispatchMouseEvent")).toBe(0);
+    // a navigation that commits while a snapshot is being taken drops that snapshot's refs
+    await call("browser_navigate", { tab, url: "https://example.com/" });
+    const target = [...fake.targets.values()].find((x) => x.url === "https://example.com/");
+    let n = 0; // the 1st Target.getTargets resolves the tab, the 2nd is the snapshot's
+    fake.hooks.getTargets = () => { if (++n < 2) return; fake.hooks.getTargets = null; fake.emit({ sessionId: target.session, method: "Page.frameNavigated", params: { frame: { id: target.targetId } } }); };
+    await call("browser_snapshot", { tab });
+    expect(textOf(await call("browser_click", { tab, ref: "e10" }))).toContain("is not in");
     const user = textOf(await call("browser_claim_tab", { tab: "t1" }));
     expect(user).toContain("Claimed t1");
     expect(textOf(await call("browser_claim_tab", { tab: "t1" }))).toContain("t1 is already yours");

@@ -577,7 +577,7 @@ export class HeliumBrowser {
   // A hidden tab drops mouse and key input until it has drawn a frame of its
   // current document (Chromium); a 1×1 capture draws one in ~50ms.
   async #frame(t) {
-    await this.#send(t, "Page.captureScreenshot", { format: "jpeg", clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }).catch(() => {});
+    await this.#send(t, "Page.captureScreenshot", { format: "jpeg", clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }, 2000).catch(() => {}); // bounded: a dialog can block it
   }
 
   async #evaluate(t, expression) {
@@ -595,11 +595,12 @@ export class HeliumBrowser {
   async #snapshot(t, { full = false } = {}) {
     if (t.dialog) return this.#dialogNotice(t);
     const { nodes = [] } = await this.#send(t, "Accessibility.getFullAXTree");
-    const info = (await this.#pages()).find((p) => p.targetId === t.targetId) ?? t.info ?? {};
+    // Stored before any other await, so a navigation reported after this tree clears it.
     const lines = formatAXTree(nodes);
-    const head = `Tab ${t.alias} ${this.#flags(t)}`.trim() + `\nTitle: ${info.title ?? ""}\nURL: ${info.url ?? ""}`;
     const prev = t.last?.lines;
     t.last = { lines, refs: new Set(lines.join("\n").match(/(?<=\[ref=)e\d+(?=\])/g)) };
+    const info = (await this.#pages()).find((p) => p.targetId === t.targetId) ?? t.info ?? {};
+    const head = `Tab ${t.alias} ${this.#flags(t)}`.trim() + `\nTitle: ${info.title ?? ""}\nURL: ${info.url ?? ""}`;
     let body;
     if (prev && !full) {
       const d = diffLines(prev, lines);
