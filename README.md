@@ -55,11 +55,12 @@ API. Arguments are embedded as JSON literals.
   OpenAI's service still enforces its own denied and forbidden app policy.
 - **Google Chrome is blocked.** Any app name matching `chrome` is refused.
   Approval is also declined when the service resolves an app to Chrome, and the
-  browser surface and Chrome backend are disabled.
+  engine's own browser surface and Chrome backend are disabled.
 
 Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `paste`,
 `press_key`, `scroll`, `drag`, `set_value`, `select_text`,
-`perform_secondary_action`, `start_audio_recording`, `stop_audio_recording`.
+`perform_secondary_action`, `start_audio_recording`, `stop_audio_recording`,
+plus the `browser_*` tools for Helium (below).
 
 ### OpenAI's guidance, delivered at runtime
 
@@ -132,6 +133,54 @@ are not listed, and the bridge never contacts the recorder.
   is written. These tools only read or replace those rules, or pause and resume
   the recorder. `resume` and `update_settings` change what gets recorded, so
   Claude should only call them when you ask.
+
+### Helium browser surface (`browser_*` tools)
+
+Web pages in **Helium** get a real browser surface, comparable to what Codex's
+browser plugin gives the model for Chrome. It is driven over the Chrome DevTools
+Protocol with Node's built-in `WebSocket` (`src/browser.mjs`, no dependencies)
+and works on **background tabs**: Helium is never brought to the front.
+
+| Tool | What it does |
+| --- | --- |
+| `browser_list_tabs` | Tabs with ids (`t1`…), titles, URLs and flags (`[agent]`, `[claimed]`, `[kept:…]`, open dialog). Touches no tab. |
+| `browser_open_tab` | New background tab (optionally a background window). Returns its snapshot. |
+| `browser_claim_tab` | Take control of one of the user's tabs. Claimed tabs are released, never closed. |
+| `browser_navigate` | URL, back, forward or reload without focusing. The URL a tab already shows is not reloaded. |
+| `browser_snapshot` | Accessibility tree with stable refs (`[ref=e42]` = DOM backend node id). Diff against the previous snapshot by default. |
+| `browser_read` | Page text, paged by `offset`/`max_chars`. Works in background tabs. |
+| `browser_screenshot` | JPEG of the viewport, full page or one element (by ref). Also saved under `~/.openai-cua-bridge/screenshots/` (last 30 kept). |
+| `browser_click` / `browser_type` / `browser_press_key` / `browser_select` | Input by ref or x/y. Any Unicode. Each action returns the snapshot diff, new tabs it opened, and any dialog it raised. |
+| `browser_upload_file` | Files into an `<input type=file>` without a file picker. |
+| `browser_handle_dialog` | Accept or dismiss alert/confirm/prompt/beforeunload. |
+| `browser_keep_tab` / `browser_close_tab` / `browser_cleanup` | Tab cleanup. Tabs the session opened are closed on cleanup and at session end unless kept as a deliverable or handoff. |
+| `browser_show_tab` | Bring a tab to the front, only when the user wants to see it. |
+| `browser_guide` | Our browser rules plus OpenAI's `browser-safety` and `confirmations` docs, loaded at runtime from the installed Codex browser plugin. The rules are also attached to the first browser result of each session. |
+
+Rules enforced in code:
+
+- **Helium only.** Every endpoint must be on loopback. The process listening on
+  the port is resolved (`lsof` → executable → `CFBundleIdentifier`) and must be
+  `net.imput.helium`. Google Chrome is refused by bundle id and by executable
+  path, and so is anything else. The check runs again after connecting.
+- **The user's tabs are read-only** until `browser_claim_tab`. Only tabs the
+  session opened can be closed.
+- **No focus stealing.** Tabs open with `background: true`. A link that would
+  open a new tab is opened as a background tab instead of being clicked. If a
+  page still raises Helium (e.g. `window.open`), the app that was in front gets
+  focus back, and the result says so.
+- **Dialogs never hang a call.** Input races against `Page.javascriptDialogOpening`.
+
+**Enabling it (once, by the user):** in Helium open
+`chrome://inspect/#remote-debugging` and turn on *Allow remote debugging for
+this browser instance*. No restart is needed. Helium then shows an
+*Allow remote debugging?* prompt when a session first connects. Until it is on,
+browser tools return these instructions, and Helium can still be used through
+`get_app_state("Helium")`.
+
+Other endpoints: `OPENAI_CUA_HELIUM_CDP` (port or `ws://` URL) and
+`OPENAI_CUA_HELIUM_USER_DATA_DIR` (colon-separated profile dirs whose
+`DevToolsActivePort` is read). Both still go through the Helium-only check.
 
 ### Engine lifecycle
 

@@ -5,6 +5,7 @@
 //   node src/shim.mjs            MCP server (what Claude Code launches)
 //   node src/shim.mjs --doctor   live health check
 import { randomUUID } from "node:crypto";
+import { BROWSER_TOOLS, HeliumBrowser, discoverEndpoints, isBrowserTool, verifyEndpoint } from "./browser.mjs";
 import { Engine, EngineError } from "./engine.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
@@ -25,6 +26,8 @@ const engine = new Engine({
   callTimeoutMs: Number(process.env.OPENAI_CUA_CALL_TIMEOUT_MS ?? 60000),
   audio: process.env.OPENAI_CUA_AUDIO !== "0",
 });
+const browser = new HeliumBrowser({ log });
+const browserTools = () => BROWSER_TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: true } }));
 const MARK = `⟦cua-bridge:${randomUUID()}⟧`;
 const START = `⟦cua-bridge-start:${randomUUID()}⟧`; // anything before it is REPL bootstrap output
 
@@ -55,6 +58,7 @@ const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ..
 
 export async function callTool(name, args = {}, signal) {
   if (isServiceTool(name)) return service.call(name, args, signal);
+  if (isBrowserTool(name)) return browser.call(name, args);
   const bad = validate(name, args);
   if (bad) return text(bad, true);
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
@@ -112,7 +116,7 @@ function serve() {
           });
         }
         case "ping": return reply(m.id, {});
-        case "tools/list": return reply(m.id, { tools: [...publicTools(), ...serviceTools()] });
+        case "tools/list": return reply(m.id, { tools: [...publicTools(), ...serviceTools(), ...browserTools()] });
         case "resources/list": return reply(m.id, { resources: listResources(DOCS) });
         case "resources/templates/list": return reply(m.id, { resourceTemplates: [] });
         case "resources/read": {
@@ -151,7 +155,7 @@ function serve() {
     quitting = true;
     log(`shim exit: ${why}`);
     service.stop(why);
-    await engine.stop(why);
+    await Promise.all([engine.stop(why), browser.close()]);
     process.exit(0);
   };
   process.stdin.on("end", () => quit("stdin closed"));
@@ -183,6 +187,10 @@ async function doctor() {
     return r.content[0].text.replace(/\s+/g, " ");
   }, true); // optional: only Record & Replay needs it
   service.stop("doctor done");
+  // Informational only: browser_* tools are optional, and connecting would
+  // make Helium ask the user to allow remote debugging.
+  const eps = discoverEndpoints();
+  console.log(`· helium browser: ${eps.length ? eps.map((ep) => `${ep.source} port ${ep.port}: ${verifyEndpoint(ep) ?? "Helium listening"}`).join("; ") : "remote debugging off (enable at chrome://inspect/#remote-debugging in Helium)"}`);
   await engine.stop("doctor done");
   process.exitCode = ok ? 0 : 1;
 }

@@ -44,7 +44,7 @@ export function apiMapping(toolNames) {
 export function adapterNote(toolNames) {
   return `OpenAI's docs below describe the JavaScript \`cua\` API of its computer-use engine. This MCP server runs that API for you, one tool per action, so read the docs for workflow and policy and act through these tools:
 ${apiMapping(toolNames)}
-Where the docs say \`cua_repl\`, \`node_repl\` or the \`js\` tool, read "these openai-computer-use tools". \`nodeRepl.write\`/\`emitImage\`, \`js_reset\`, \`rewriteDocumentation()\` and the browser/tab APIs are not exposed here (the browser surface is disabled); tool results already include the state and screenshots. Code-batching advice applies only if a tool here accepts a script. Examples that target Google Chrome are illustrative only: Chrome is blocked here; use Helium for browser work.`;
+Where the docs say \`cua_repl\`, \`node_repl\` or the \`js\` tool, read "these openai-computer-use tools". \`nodeRepl.write\`/\`emitImage\`, \`js_reset\`, \`rewriteDocumentation()\` and the browser/tab APIs are not exposed here (the browser surface is disabled); tool results already include the state and screenshots. Code-batching advice applies only if a tool here accepts a script. Examples that target Google Chrome are illustrative only: Chrome is blocked here; use Helium for browser work, through the browser_* tools.`;
 }
 
 // ---------- discovery ----------
@@ -136,7 +136,7 @@ export function readResource(r) {
 
 const WRAPPER = `OpenAI's computer-use engine for macOS apps (screenshots, accessibility trees, real input), run in the background: the user's cursor and frontmost app are untouched.
 Workflow: get_app_state(app) first; act by element_index (screenshot x/y when AX fails); read the returned AX diff. Refresh with get_app_state when indices may be stale. Done = the requested result is visibly present.
-Rules: do UI work only through these tools, never AppleScript, osascript, JXA, System Events or CGEvent unless the user asks. Prefer purpose-built tools, CLIs or APIs. Never open or operate Google Chrome; the only browser allowed is Helium.`;
+Rules: do UI work only through these tools, never AppleScript, osascript, JXA, System Events or CGEvent unless the user asks. Prefer purpose-built tools, CLIs or APIs. Never open or operate Google Chrome; the only browser allowed is Helium. For web pages in Helium prefer the browser_* tools: background tabs, DOM refs, the user's tabs untouched; browser_cleanup when done.`;
 
 // Splits markdown into leaf sections (heading + body, blank lines collapsed).
 function sections(md) {

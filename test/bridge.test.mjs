@@ -70,7 +70,7 @@ describe("protocol", () => {
     expect(init.protocolVersion).toBe("2025-06-18");
     expect(init.instructions).toContain("get_app_state");
     const tools = (await s.rpc("tools/list", {})).result.tools;
-    expect(tools.map((t) => t.name).sort()).toEqual(["click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
+    expect(tools.map((t) => t.name).filter((n) => !n.startsWith("browser_")).sort()).toEqual(["click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
     for (const t of tools) expect(t.inputSchema.properties).toBeDefined();
     for (const t of tools) expect(Object.keys(t).sort()).toEqual(["annotations", "description", "inputSchema", "name"]);
     for (const n of ["click", "type_text", "paste", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"])
