@@ -486,6 +486,16 @@ describe("run_cua_js", () => {
     expect(spawns(sb).length).toBe(0);
   });
 
+  test("the plugin's boolean option values: \"true\" enables, \"false\" does not", async () => {
+    for (const [v, on] of [["true", true], ["false", false], ["", false]]) {
+      const s = startShim(sandbox({ OAI_CUA_ENABLE_JS: v, OAI_CUA_COMPUTER_HISTORY: v }));
+      await s.init();
+      const names = (await s.rpc("tools/list", {})).result.tools.map((t) => t.name);
+      expect(names.includes("run_cua_js")).toBe(on);
+      expect(names.includes("computer_history_status")).toBe(on);
+    }
+  });
+
   test("bindings persist across calls, bridge cells leak none, reset_repl clears them", async () => {
     const sb = jsSb(), s = startShim(sb);
     const init = (await s.init()).result;
@@ -672,126 +682,5 @@ describe("lifecycle", () => {
     const rs = await Promise.all(Array.from({ length: 40 }, (_, i) => s.call(i % 2 ? "list_apps" : "get_app_state", { ...(i % 2 ? {} : { app: "TextEdit" }) })));
     expect(rs.every((r) => !r.isError)).toBe(true);
     expect(spawns(sb).length).toBe(1);
-  });
-});
-
-describe("installer", () => {
-  function fakeBin(sb) {
-    const bin = path.join(sb.dir, "bin");
-    fs.mkdirSync(bin);
-    const calls = path.join(sb.dir, "calls.jsonl");
-    const script = (body) => `#!${NODE}\nconst fs=require("fs");const a=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({cmd:require("path").basename(process.argv[1]),a})+"\\n");${body}`;
-    fs.writeFileSync(path.join(bin, "claude"), script(`const st=${JSON.stringify(path.join(sb.dir, "claude-state"))};
-if(a[1]==="add-json"){const f=st+".failed";if(process.env.FAKE_ADD_FAIL_ONCE&&!fs.existsSync(f)){fs.writeFileSync(f,"");process.exit(1);}fs.writeFileSync(st,a[5]);}
-if(a[1]==="get"){if(!fs.existsSync(st))process.exit(1);console.log(fs.readFileSync(st,"utf8"));}`), { mode: 0o755 });
-    fs.writeFileSync(path.join(bin, "codex"), script(`const st=${JSON.stringify(path.join(sb.dir, "codex-removed"))};
-if(a[1]==="get")process.exit(fs.existsSync(st)?1:0);
-if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
-    fs.symlinkSync(NODE, path.join(bin, "node"));
-    return { bin, calls: () => (fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []) };
-  }
-  function repoCopy(sb, name) {
-    const dest = path.join(sb.dir, name);
-    fs.mkdirSync(path.join(dest, "src"), { recursive: true });
-    fs.copyFileSync(path.join(ROOT, "install.mjs"), path.join(dest, "install.mjs"));
-    for (const f of fs.readdirSync(path.join(ROOT, "src"))) fs.copyFileSync(path.join(ROOT, "src", f), path.join(dest, "src", f));
-    fs.cpSync(path.join(ROOT, "skills"), path.join(dest, "skills"), { recursive: true });
-    return dest;
-  }
-
-  test("installs with argv only (no shell expansion), persists env, denies native CU, removes legacy worker", () => {
-    const sb = sandbox({ OAI_CUA_IDLE_MS: "1234" });
-    const { bin, calls } = fakeBin(sb);
-    const repo = repoCopy(sb, "repo-$(touch INJECTED)");
-    const cfg = path.join(sb.dir, "claude-cfg");
-    fs.mkdirSync(cfg);
-    fs.writeFileSync(path.join(cfg, "settings.json"), JSON.stringify({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }] }), { mode: 0o600 });
-    fs.mkdirSync(path.join(cfg, "skills/oai-cua"), { recursive: true });
-    fs.writeFileSync(path.join(cfg, "skills/oai-cua/SKILL.md"), "OLD USER SKILL");
-    const r = spawnSync(NODE, [path.join(repo, "install.mjs")], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-    expect(r.status).toBe(0);
-    expect(fs.existsSync(path.join(sb.dir, "INJECTED"))).toBe(false);
-    const add = calls().find((c) => c.cmd === "claude" && c.a[1] === "add-json");
-    const spec = JSON.parse(add.a[5]);
-    expect(spec.args).toEqual([path.join(fs.realpathSync(repo), "src/shim.mjs")]);
-    expect(spec.env.OAI_CUA_IDLE_MS).toBe("1234");
-    expect(spec.env.OAI_CUA_MCP_JSON).toBe(sb.env.OAI_CUA_MCP_JSON);
-    expect(fs.statSync(path.join(cfg, "settings.json")).mode & 0o777).toBe(0o600);
-    const settings = JSON.parse(fs.readFileSync(path.join(cfg, "settings.json"), "utf8"));
-    expect(settings).toEqual({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }, { serverName: "computer-use" }] });
-    expect(calls().some((c) => c.cmd === "codex" && c.a[1] === "remove" && c.a[2] === "openai-cua-worker")).toBe(true);
-    expect(fs.readdirSync(path.join(sb.dir, "state/backups")).length).toBeGreaterThan(0);
-    const skill = path.join(cfg, "skills/oai-cua");
-    expect(fs.realpathSync(skill)).toBe(fs.realpathSync(path.join(repo, "skills/oai-cua")));
-    const saved = fs.readdirSync(path.join(sb.dir, "state/backups")).find((f) => f.startsWith("skills-oai-cua."));
-    expect(fs.readFileSync(path.join(sb.dir, "state/backups", saved, "SKILL.md"), "utf8")).toBe("OLD USER SKILL");
-    const again = spawnSync(NODE, [path.join(repo, "install.mjs"), "--skip-live"], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-    expect(again.stdout).toContain("already linked");
-  });
-
-  test("failed preflight (missing runtime, bad settings) changes nothing", () => {
-    for (const [env, settings] of [[{ OAI_CUA_MCP_JSON: "/nonexistent/mcp.json" }, "{}"], [{}, "null"], [{}, "{oops"], [{}, '{"deniedMcpServers":{}}']]) {
-      const sb = sandbox(env);
-      const { bin, calls } = fakeBin(sb);
-      const cfg = path.join(sb.dir, "claude-cfg");
-      fs.mkdirSync(cfg);
-      fs.writeFileSync(path.join(cfg, "settings.json"), settings);
-      const r = spawnSync(NODE, [path.join(ROOT, "install.mjs")], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain("No configuration was changed");
-      expect(calls().filter((c) => c.a[0] === "mcp")).toEqual([]);
-      expect(fs.readFileSync(path.join(cfg, "settings.json"), "utf8")).toBe(settings);
-    }
-  });
-
-  test("failed registration restores the previous one and leaves settings alone", () => {
-    const sb = sandbox({ FAKE_ADD_FAIL_ONCE: "1" });
-    const { bin, calls } = fakeBin(sb);
-    const cfg = path.join(sb.dir, "claude-cfg");
-    fs.mkdirSync(cfg);
-    const old = { type: "stdio", command: "/old/node", args: ["/old/shim.mjs"], env: {} };
-    fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "oai-cua": old } }));
-    fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
-    const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live"], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("Previous registration restored");
-    const adds = calls().filter((c) => c.a[1] === "add-json");
-    expect(JSON.parse(adds.at(-1).a[5])).toEqual(old);
-    expect(fs.readFileSync(path.join(cfg, "settings.json"), "utf8")).toBe("{}");
-  });
-  test("migrates the pre-rename registration, skill link and env names", () => {
-    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "4321" }); // pre-rename env name
-    const { bin, calls } = fakeBin(sb);
-    const cfg = path.join(sb.dir, "claude-cfg");
-    fs.mkdirSync(path.join(cfg, "skills"), { recursive: true });
-    fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
-    fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "openai-computer-use": { env: { OPENAI_CUA_ENABLE_JS: "1" } } } })); // pre-rename
-    const oldLink = path.join(cfg, "skills/openai-computer-use"); // pre-rename
-    fs.symlinkSync(path.join(ROOT, "skills/openai-computer-use"), oldLink); // pre-rename
-    const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live"], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-    expect(r.status).toBe(0);
-    const spec = JSON.parse(calls().find((c) => c.a[1] === "add-json").a[5]);
-    expect(spec.env).toMatchObject({ OAI_CUA_IDLE_MS: "4321", OAI_CUA_ENABLE_JS: "1" });
-    expect(calls().some((c) => c.a[1] === "remove" && c.a.at(-1) === "openai-computer-use")).toBe(true); // pre-rename
-    expect(fs.lstatSync(oldLink, { throwIfNoEntry: false })).toBeUndefined();
-    expect(fs.realpathSync(path.join(cfg, "skills/oai-cua"))).toBe(fs.realpathSync(path.join(ROOT, "skills/oai-cua")));
-  });
-  test("--enable-js opts in, a later plain install keeps it, --disable-js removes it", () => {
-    const sb = sandbox();
-    const { bin, calls } = fakeBin(sb);
-    const cfg = path.join(sb.dir, "claude-cfg");
-    fs.mkdirSync(cfg);
-    fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
-    const install = (...flags) => {
-      const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live", ...flags], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
-      expect(r.status).toBe(0);
-      const spec = JSON.parse(calls().filter((c) => c.a[1] === "add-json").at(-1).a[5]);
-      fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "oai-cua": spec } }));
-      return spec.env.OAI_CUA_ENABLE_JS;
-    };
-    expect(install()).toBeUndefined();
-    expect(install("--enable-js")).toBe("1");
-    expect(install()).toBe("1");
-    expect(install("--disable-js")).toBeUndefined();
   });
 });

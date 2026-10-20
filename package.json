@@ -6,9 +6,8 @@
   "type": "module",
   "bin": { "oai-cua": "src/shim.mjs" },
   "scripts": {
-    "check": "for f in src/*.mjs install.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
-    "doctor": "node src/shim.mjs --doctor",
-    "install-bridge": "node install.mjs"
+    "check": "for f in src/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
+    "doctor": "node src/shim.mjs --doctor"
   },
   "engines": { "node": ">=18" },
   "license": "MIT"
