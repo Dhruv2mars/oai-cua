@@ -269,6 +269,15 @@ describe("stop, takeover and turns", () => {
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
   });
 
+  test("stop_app under another spelling drops the cached session, so the stale stop is still recovered", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "textedit" });
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+  });
+
   test("a stop_app record is dropped once run_cua_js runs", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
     await s.init();

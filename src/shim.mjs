@@ -226,7 +226,7 @@ async function execute(name, args, signal) {
       if (name === "stop_audio_recording") engine.keepAliveUntil(0);
       if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
-        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").slice(0, 1000).trim(); // REPL errors come first
+        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").replaceAll(OPENED, "").slice(0, 1000).trim(); // REPL errors come first
         return text(explain(msg || "computer-use action failed"), true);
       }
       if (!p.render) return withDocs(out);
