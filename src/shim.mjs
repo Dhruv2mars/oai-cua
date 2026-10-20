@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { Engine, EngineError } from "./engine.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
+import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { TOOL_NAMES, buildCell, extractOutput, isReadOnly, publicTools, validate } from "./tools.mjs";
 
 const VERSION = "0.2.0";
@@ -31,9 +32,29 @@ const START = `⟦cua-bridge-start:${randomUUID()}⟧`; // anything before it is
 let clientProtocol = "2025-06-18";
 const audioContentOk = () => clientProtocol >= "2025-03-26";
 
+// Server → client requests (elicitation), answered by the human in Claude Code.
+let clientCaps = {};
+const toClient = new Map();
+let toClientId = 0;
+function askClient(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = `cua-bridge-${++toClientId}`;
+    toClient.set(id, { resolve, reject });
+    if (!writeLine(process.stdout, { jsonrpc: "2.0", id, method, params })) { toClient.delete(id); reject(new Error("client unavailable")); }
+  });
+}
+const service = createService({
+  log,
+  idleMs: Number(process.env.OPENAI_CUA_IDLE_MS ?? 300000),
+  callTimeoutMs: Number(process.env.OPENAI_CUA_CALL_TIMEOUT_MS ?? 60000),
+  canElicit: () => !!clientCaps?.elicitation,
+  elicit: (p) => askClient("elicitation/create", { message: String(p.message ?? ""), requestedSchema: p.requestedSchema ?? { type: "object", properties: {} } }),
+});
+
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 
 export async function callTool(name, args = {}, signal) {
+  if (isServiceTool(name)) return service.call(name, args, signal);
   const bad = validate(name, args);
   if (bad) return text(bad, true);
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
@@ -71,12 +92,18 @@ function serve() {
   const inflight = new Map(); // request id → AbortController
   process.stdin.on("data", makeLineReader(async (m) => {
     if (m.method === "notifications/cancelled") return inflight.get(m.params?.requestId)?.abort();
+    if (m.method == null && toClient.has(m.id)) { // a response to askClient
+      const w = toClient.get(m.id);
+      toClient.delete(m.id);
+      return m.error ? w.reject(new Error(m.error.message || "client error")) : w.resolve(m.result);
+    }
     if (m.id == null) return; // other notifications
     try {
       switch (m.method) {
         case "initialize": {
           const v = m.params?.protocolVersion;
           clientProtocol = PROTOCOLS.includes(v) ? v : "2025-06-18";
+          clientCaps = m.params?.capabilities ?? {};
           return reply(m.id, {
             protocolVersion: clientProtocol,
             capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } },
@@ -85,7 +112,7 @@ function serve() {
           });
         }
         case "ping": return reply(m.id, {});
-        case "tools/list": return reply(m.id, { tools: publicTools() });
+        case "tools/list": return reply(m.id, { tools: [...publicTools(), ...serviceTools()] });
         case "resources/list": return reply(m.id, { resources: listResources(DOCS) });
         case "resources/templates/list": return reply(m.id, { resourceTemplates: [] });
         case "resources/read": {
@@ -123,6 +150,7 @@ function serve() {
     if (quitting) return;
     quitting = true;
     log(`shim exit: ${why}`);
+    service.stop(why);
     await engine.stop(why);
     process.exit(0);
   };
@@ -136,9 +164,9 @@ function serve() {
 
 async function doctor() {
   let ok = true;
-  const step = async (label, fn) => {
+  const step = async (label, fn, optional = false) => {
     try { console.log(`✓ ${label}: ${await fn()}`); }
-    catch (e) { ok = false; console.log(`✗ ${label}: ${e.message}`); }
+    catch (e) { ok &&= optional; console.log(`${optional ? "–" : "✗"} ${label}: ${e.message}`); }
   };
   await step("runtime", async () => { const r = findRuntime(); return `${r.command} via ${r.source}`; });
   await step("guidance", async () => `${DOCS.size} OpenAI docs found, instructions ${INSTRUCTIONS.length} chars`);
@@ -149,6 +177,12 @@ async function doctor() {
     const running = r.content.map((c) => c.text ?? "").join("\n").split("\n").filter((l) => l.includes("[running]")).length;
     return `${running} running apps, ${Date.now() - t}ms`;
   });
+  await step("native client (Record & Replay status, read-only)", async () => {
+    const r = await callTool("record_status");
+    if (r.isError) throw new Error(r.content[0].text);
+    return r.content[0].text.replace(/\s+/g, " ");
+  }, true); // optional: only Record & Replay needs it
+  service.stop("doctor done");
   await engine.stop("doctor done");
   process.exitCode = ok ? 0 : 1;
 }
