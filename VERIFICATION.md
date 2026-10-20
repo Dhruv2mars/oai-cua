@@ -445,3 +445,94 @@ covers:
 - a missing client binary
 - the native client stopped on shim exit
 - Computer History opt-in, with nested schema validation
+
+## 2026-10-20 — Helium browser surface (`browser_*`, thread `browser`)
+
+### Can OpenAI's browser engine be pointed at Helium? No (investigated, not reused)
+
+Evidence from the installed Codex browser plugin
+(`~/.codex/plugins/cache/openai-bundled/browser/26.1013.40934/`):
+
+- `scripts/browser-service.mjs` discovers browser backends as Unix sockets
+  (per-platform socket dir; `BROWSER_USE_BACKEND_PATHS` override) and speaks an
+  undocumented, minified JSON-RPC protocol to them (`getInfo`, tab and CDP
+  relay methods). Backend types are `iab`, `extension`, `cdp` and `mcpapps`
+  (`browser-client.mjs` enum).
+- The Chrome backend is the ChatGPT browser **extension + native-messaging
+  host** (`extension-ids.json`, `check-extension-installed.js`,
+  `check-native-host-manifest.js`). It contains no `DevToolsActivePort`,
+  `webSocketDebuggerUrl`, `/json/version` or `remote-debugging` code (grep
+  count 0 in both bundles), so it cannot attach to a CDP port.
+- Helium has no ChatGPT extension installed, and the user's Helium was not
+  listening for CDP (its `DevToolsActivePort` names port 9222 from August, with
+  nothing listening).
+- Pointing OpenAI's service at Helium would mean impersonating a backend over a
+  private protocol that changes per release. It would also re-enable the
+  service's Chrome discovery, which the bridge disables on purpose. Rejected.
+
+So the bridge has its own minimal CDP client: `src/browser.mjs`, Node's
+built-in `WebSocket`, no dependencies. OpenAI's `browser-safety.md` and
+`confirmations.md` are loaded from the installed plugin at runtime
+(`browser_guide`), not vendored.
+
+### Helium constraints, measured
+
+- A **second Helium instance with its own profile** runs beside the user's
+  (`open -g -n /Applications/Helium.app --args --user-data-dir=/tmp/… --remote-debugging-port=0`).
+  The user's Helium (pid 81286) kept running untouched throughout. Launching it
+  took frontmost once at startup; no tool call did afterwards.
+- **No relaunch is needed for the user's Helium.** A profile with only the
+  `chrome://inspect/#remote-debugging` toggle on (Local State
+  `devtools.remote_debugging.user-enabled: true`, no flags) listens on 9222 and
+  writes `DevToolsActivePort`. HTTP `/json` is disabled in that mode, so the
+  client reads the WebSocket path from `DevToolsActivePort`. Each new
+  connection waits on Helium's **"Allow remote debugging?"** prompt (window
+  captured; the WebSocket stays CONNECTING until the user clicks), so the
+  client waits up to 60s and says to click Allow.
+- The user's live Helium settings were **not changed**. Enabling the toggle is
+  left to the user.
+
+### Live probe of this worktree's shim (stdio JSON-RPC, disposable Helium 155.0.8059.84)
+
+`/tmp/browser-probe/shim-probe.mjs` drove `node src/shim.mjs` against a local
+form page. Frontmost app before → after was recorded around **every** call:
+`T3 Code → T3 Code` for all 27 calls.
+
+| Capability | Result |
+| --- | --- |
+| list tabs | `t1 "about:blank"`, 104ms; no tab attached |
+| open in background | `Opened t2 in the background`, 181ms, full snapshot with refs |
+| type by ref | `browser-probe héllo 日本` → diff `+ textbox "Name" value="browser-probe héllo 日本" [focused]`, 265ms |
+| select by ref | diff `combobox "Size" value="Large"`, 198ms |
+| file upload | page's `change` handler printed `file:upload.txt:21` (name + byte size), 206ms |
+| read background tab | page text incl. `file:upload.txt:21`, 7ms |
+| page / element screenshot | 1192×1326 viewport JPEG, 55ms (inspected: typed text, upload, select state visible); element `Go` JPEG, 63ms |
+| JS dialog | click on `Go` returned in 238ms with `A JavaScript confirm dialog is open in t2: "Delete everything?"`; list shows `[confirm dialog open]`; accept → page shows `confirmed` |
+| link with `target=_blank` | opened as background tab t3 instead of clicked, 164ms, no focus change |
+| `window.open` from a click | tab t4 detected as `opened by t2`; Helium took front, was detected and **T3 Code restored**; front after call = T3 Code |
+| navigate | same URL skipped; `about:blank#probe` and `back` worked |
+| key | `Tab` moved focus (diff shows `[focused]`), 179ms |
+| user tab rules | read OK; click refused until claim; claim → `[claimed]` |
+| cleanup | `closed t2, t3, t4; kept none; released t1`; only `about:blank` left |
+| session end | open tab then stdin EOF: shim exited in 7ms, tab closed (only `about:blank` left) |
+| non-Helium port | `OPENAI_CUA_HELIUM_CDP` → a Node listener: `refusing node (no bundle id): only Helium is allowed`, no CDP sent |
+
+Two defects found live and fixed before the final probe:
+
+- `Input.dispatchMouseEvent mouseMoved` takes **5009ms** in a hidden tab (it
+  waits for a frame); press/release take 15ms. Clicks no longer wait on the
+  move: 5171ms → 238ms.
+- A click that opens a new tab raises Helium, even with ⌘-click (measured).
+  Hence link interception plus front-app restoration.
+
+Disposable instance closed afterwards (`kill` of its pid only). Regression
+tests: `test/browser.test.mjs` runs a fake CDP endpoint (`test/fake-cdp.mjs`)
+covering every tool, the dialog race, ownership, cleanup, focus restoration,
+the Chrome / non-Helium refusal (including a real non-Helium listener through
+the real `lsof` check), and shim routing. `bun run check`: 33 pass.
+
+### Open
+
+- The user still has to enable remote debugging in their Helium and click
+  Allow per connection. Each Claude session holds its own connection, so it is
+  one prompt per session.
