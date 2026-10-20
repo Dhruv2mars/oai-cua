@@ -18,4 +18,4 @@ live probe of this worktree's shim shows each capability, PR squash-merged.
 - [x] Tests (fake engine) for every new behaviour (52 pass after rebase)
 - [x] README + VERIFICATION (dated, measured)
 - [x] Live probe of worktree shim (scratch TextEdit docs only, closed afterwards)
-- [ ] PR, link, rebase, check, squash-merge
+- [x] PR #6, link, rebase (actions, guidance, service, browser), check (65 pass), squash-merge
