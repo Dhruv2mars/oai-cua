@@ -804,4 +804,12 @@ Live after the change:
 - A ends a turn on idle, B's `list_apps` → OK (630 ms).
 - A: `get_app_state Calculator`, `stop_app Calculator` (`replacing the engine to clear stops from turn 1`), `get_app_state Calculator` → OK on the fresh engine; B meanwhile: `list_apps` and `get_app_state Calculator` → OK.
 
-`bun run check`: 95 pass, 0 fail.
+A review of the redesign found no correctness bug (three of its tests fail on
+the previous commit). Cleanups applied: the replacement is queued before
+waiting for cua-repl's `turn_ended`; a pending replacement is dropped once the
+engine has exited, and runs when a recording ends (by `stop_audio_recording`
+or its timer); the trusted service rejects anything but resolve/stop-app
+before loading OpenAI's client (tested); "current turn ended" guidance now
+names the other client as the cause.
+
+`bun run check`: 96 pass, 0 fail.

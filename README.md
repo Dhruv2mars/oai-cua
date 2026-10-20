@@ -389,6 +389,12 @@ rest are for development (the pre-rename `OPENAI_CUA_*` names are still read for
   that app's sessions for other clients using it at the same moment.
 - A stop made by *another* client lasts until that client's engine exits.
   Replacing this shim's engine doesn't clear it.
+- A stop of yours ends with its turn, and `stop_app` (on any app) or 60 s of
+  quiet ends the turn. So if Claude calls `stop_app` right after being told
+  you stopped an app, your app is usable again at once.
+- A `stopApp` sent from a `run_cua_js` script isn't followed by an engine
+  replacement, so that app stays stopped for every client until the engine is
+  released when idle (5 minutes). Use the `stop_app` tool instead.
 - `run_cua_js` scripts can call the bridge's trusted service too. It only
   offers resolve and stop-app; neither can answer an approval.
 

@@ -24,7 +24,10 @@ const text = (v, name) => {
   return v;
 };
 
+const ALLOWED = new Set(["resolve", "stopApp"]); // never TurnEnded: it blocks every other client
+
 export async function handleRpc(msg) {
+  if (!ALLOWED.has(msg?.type)) throw new Error(`unsupported cuabridge request: ${msg?.type}`);
   const c = await sky();
   switch (msg?.type) {
     case "resolve": { // app name/path/bundle id → the service's identity for it

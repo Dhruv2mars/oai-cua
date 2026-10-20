@@ -11,7 +11,7 @@ const RULES = [
   ["paste-conflict", /conflicted with your paste/i,
     "Check the app's state with get_app_state: the user's clipboard may have been pasted instead of your text."],
   ["turn-ended", /current turn ended/i,
-    "This action belonged to a turn that was cancelled or ended. Retry it if it is still wanted."],
+    "Another computer-use client (e.g. ChatGPT or Codex) ended its turn, and the service refuses other clients until that client's engine exits, usually within a few minutes. Hand back to the user, or wait and retry."],
   ["approval-denied", /was not approved to use|not approved/i,
     "The user declined access to this app. Do not retry; ask the user whether to use it."],
   ["org-policy", /blocked from using the app .*organization/i,

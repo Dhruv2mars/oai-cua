@@ -48,10 +48,11 @@ async function endTurn(why) {
   if (turn.stopped) clearStops = true;
   turn.stopped = false;
   log(`turn ${ended.turn} ends: ${why}`);
-  try { await engine.endTurn(ended); } catch (e) { log(`turn end failed: ${e.message}`); }
-  await releaseStops(`stops from turn ${ended.turn}`);
+  const ending = engine.endTurn(ended).catch((e) => log(`turn end failed: ${e.message}`));
+  await Promise.all([ending, releaseStops(`stops from turn ${ended.turn}`)]); // the replacement is queued before any new call
 }
 async function releaseStops(why) {
+  if (!engine.running) clearStops = false; // its connection is gone, and its stops with it
   if (!clearStops || engine.recording) return;
   clearStops = false;
   observations.forget();
@@ -203,8 +204,12 @@ async function execute(name, args, signal) {
         return { content: limitOutput([r.content[0] ?? { type: "text", text: "script failed" }, ...out]), isError: true };
       }
       const out = extractOutput(r.content, MARK);
-      if (name === "start_audio_recording" && !r.isError) engine.keepAliveUntil(Date.now() + Number(args.max_duration_ms ?? 60000) + 5000);
-      if (name === "stop_audio_recording") engine.keepAliveUntil(0);
+      if (name === "start_audio_recording" && !r.isError) {
+        const ms = Number(args.max_duration_ms ?? 60000) + 5000;
+        engine.keepAliveUntil(Date.now() + ms);
+        setTimeout(() => releaseStops("stops deferred during the recording"), ms + 100).unref?.();
+      }
+      if (name === "stop_audio_recording") { engine.keepAliveUntil(0); await releaseStops("stops deferred during the recording"); }
       if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
         const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").slice(0, 1000).trim(); // REPL errors come first

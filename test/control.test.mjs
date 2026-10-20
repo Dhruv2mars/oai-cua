@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Approver, parseRequest } from "../src/approval.mjs";
+import { handleRpc } from "../src/bridge-service.mjs";
 import { diagnose, explain } from "../src/diagnose.mjs";
 import { FocusGuard, isApp } from "../src/focus.mjs";
 
@@ -226,10 +227,13 @@ describe("stop, takeover and turns", () => {
     await s.call("stop_app", { app: "TextEdit" });
     expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use"); // engine kept
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
-    await s.call("stop_audio_recording");
-    await s.call("stop_app", { app: "Notes" }); // the next turn end can replace it now
+    await s.call("stop_audio_recording"); // the deferred replacement happens now
     expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+  });
+
+  test("the trusted bridge service refuses TurnEnded (it would block every other client)", async () => {
+    await expect(handleRpc({ type: "turnEnded", threadID: "t", turnID: "1" })).rejects.toThrow("unsupported cuabridge request: turnEnded");
   });
 
   test("the turn ends after Claude goes quiet", async () => {

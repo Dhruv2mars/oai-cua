@@ -12,7 +12,7 @@ import { BLOCKED_APP } from "./tools.mjs";
 
 const PROTOCOL = "2025-06-18";
 
-// Our trusted node_repl service (stop app, end turn); see bridge-service.mjs.
+// Our trusted node_repl service (resolve and stop apps); see bridge-service.mjs.
 const SERVICE = fileURLToPath(new URL("./bridge-service.mjs", import.meta.url));
 export function serviceEnv(env) {
   let services = {};
@@ -48,10 +48,9 @@ export class Engine {
   // Run a JavaScript cell. Resolves { content, isError }; rejects EngineError.
   // A cancelled cell is skipped if still queued; if running, its engine is
   // stopped so the action cannot complete later. allowAudio lets this cell's
-  // audio-recording approval through; every other cell's is declined. meta
-  // overrides the turn metadata (used to send a turn's own end).
-  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false, meta } = {}) {
-    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio, meta);
+  // audio-recording approval through; every other cell's is declined.
+  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false } = {}) {
+    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio);
   }
 
   // Discard the REPL's JavaScript bindings (cua-repl's js_reset). Resolves
@@ -61,12 +60,12 @@ export class Engine {
     return this.#enqueue("js_reset", {}, this.callTimeoutMs, signal, false).then(() => true);
   }
 
-  #enqueue(tool, args, timeoutMs, signal, allowAudio, meta) {
+  #enqueue(tool, args, timeoutMs, signal, allowAudio) {
     this.busy++;
     clearTimeout(this.idleTimer);
     const job = this.queue.then(() => {
       if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
-      return this.#exec(tool, args, timeoutMs, signal, allowAudio, meta);
+      return this.#exec(tool, args, timeoutMs, signal, allowAudio);
     });
     this.queue = job.catch(() => {});
     return job.finally(() => { this.busy--; this.#armIdle(); });
@@ -89,13 +88,13 @@ export class Engine {
     this.#armIdle();
   }
 
-  async #exec(tool, args, timeoutMs, signal, allowAudio, meta) {
+  async #exec(tool, args, timeoutMs, signal, allowAudio) {
     const inst = await this.#ensure();
     if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
     const onAbort = () => this.#retire(inst, "cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
     inst.allowAudio = allowAudio;
-    const turn = tool === "js" ? meta ?? this.turnMeta() : null;
+    const turn = tool === "js" ? this.turnMeta() : null;
     const r = await this.#request(inst, "tools/call", { name: tool, arguments: args, ...(turn ? { _meta: { "x-codex-turn-metadata": turn } } : {}) }, timeoutMs + Math.min(10000, timeoutMs), true)
       .finally(() => { inst.allowAudio = false; signal?.removeEventListener("abort", onAbort); });
     if (r.error) throw new EngineError(`engine error: ${r.error.message || JSON.stringify(r.error)}`, "ENGINE_RPC");

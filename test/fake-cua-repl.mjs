@@ -11,8 +11,9 @@
 // FAKE_TREE_FILE (JSON {app: tree} read on every capture), FAKE_NO_SHOT.
 // FAKE_TAKEOVER (first N actions fail with the service's "user changed" error),
 // FAKE_BY_ID (getApp only accepts bundle ids), FAKE_ERROR (getApp throws it).
-// FAKE_STICKY_STOP: a stopped app stays stopped until this process exits (turn
-// ends don't clear it), as SkyComputerUseService sometimes does;
+// FAKE_STICKY_STOP: a stopped app stays stopped until this process exits, as
+// with SkyComputerUseService (only its TurnEnded, which the bridge never
+// sends, would clear it sooner);
 // FAKE_USER_STOP: comma-separated apps the user stopped; only the first fake
 // process started for this FAKE_LOG sees them (a new engine is clean).
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
