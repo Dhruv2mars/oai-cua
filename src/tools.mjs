@@ -4,6 +4,10 @@
 const APP = { type: "string", description: "App name, full app path, or unambiguous bundle identifier" };
 const INDEX = { type: "integer", description: "Element index from the accessibility tree returned by get_app_state" };
 const obj = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
+const SHOT = { type: "boolean", description: "Also return a screenshot taken after the action, so the result (e.g. of a coordinate click) can be checked in the same call. Defaults to false" };
+const HOLD = (what) => ({ type: "integer", minimum: 0, maximum: 30000, description: `Milliseconds to hold ${what} before releasing it (0-30000)` });
+const CHORD = "Key names are xdotool-style and case-sensitive (Return, Tab, Escape, BackSpace, Delete, space, Up, Page_Down, F5, a, comma); modifiers are super (⌘), ctrl, alt (⌥), shift, and the aliases cmd, command, control, option, opt are accepted in any case";
+const action = (props, required) => obj({ ...props, screenshot: SHOT }, required);
 
 export const TOOLS = [
   { name: "list_apps", readOnly: true,
@@ -13,32 +17,44 @@ export const TOOLS = [
     description: "Start an app use session if needed (launching the app in the background if it is not running), then return a screenshot and numbered accessibility tree of the app's key window. Call this before interacting with an app and whenever you need fresh element indices.",
     inputSchema: obj({ app: APP }, ["app"]) },
   { name: "click",
-    description: "Click an element by index, or by x/y in screenshot pixel coordinates. Does not move the user's cursor or bring the app to the front.",
-    inputSchema: obj({ app: APP, element_index: INDEX, x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" },
-      click_count: { type: "integer", description: "Number of clicks. Defaults to 1" }, mouse_button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left" } }, ["app"]) },
+    description: "Click an element by index, or by x/y in screenshot pixel coordinates. Can hold modifier keys (shift-click, ⌘-click) and hold the mouse button down (long press). Does not move the user's cursor or bring the app to the front.",
+    inputSchema: action({ app: APP, element_index: INDEX, x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" },
+      click_count: { type: "integer", description: "Number of clicks. Defaults to 1" }, mouse_button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left" },
+      modifiers: { type: "string", description: `Modifier chord held across the whole click, joined with +, e.g. "shift", "super", "super+shift", "cmd+alt". ${CHORD}` },
+      hold_ms: HOLD("each mouse-down") }, ["app"]) },
   { name: "type_text",
-    description: "Type literal text into the app's focused element. Non-ASCII text (accents, CJK, emoji) is inserted via paste; the clipboard is restored by the engine.",
-    inputSchema: obj({ app: APP, text: { type: "string", description: "Literal text to type" } }, ["app", "text"]) },
+    description: "Type literal text into the app's focused element. Single-line printable ASCII is typed as keystrokes. Text containing a newline, carriage return or tab, or any non-ASCII character (accents, CJK, emoji), is inserted with one paste instead, so newlines never become Return key presses (which could submit a form or send a message). The engine restores the clipboard. To press Return or Tab as keys, use press_key.",
+    inputSchema: action({ app: APP, text: { type: "string", description: "Literal text to type" } }, ["app", "text"]) },
+  { name: "paste",
+    description: "Paste content into the app's focused element in one step, as plain text, or as rich text rendered from Markdown or HTML (headings, bold, links, lists) for apps that accept rich text. The engine restores the user's clipboard afterwards. On macOS the paste goes to the current focus: click or select the target first (there is no element_index).",
+    inputSchema: action({ app: APP, text: { type: "string", description: "Content to paste" },
+      format: { type: "string", enum: ["text", "md", "html"], description: "text (default), md (Markdown) or html" } }, ["app", "text"]) },
   { name: "press_key",
-    description: "Press a key or key combination in xdotool syntax, e.g. \"Return\", \"Tab\", \"Escape\", \"super+c\", \"super+Down\", \"Up\".",
-    inputSchema: obj({ app: APP, key: { type: "string", description: "Key or key combination" } }, ["app", "key"]) },
+    description: `Press a key or key combination, e.g. "Return", "Tab", "Escape", "super+c", "cmd+shift+z", "super+Down", "Up". ${CHORD}. A chord needs at least one non-modifier key.`,
+    inputSchema: action({ app: APP, key: { type: "string", description: "Key or key combination" }, hold_ms: HOLD("the key") }, ["app", "key"]) },
   { name: "scroll",
     description: "Scroll an element (by index) or a point (x/y) in a direction by a number of pages.",
-    inputSchema: obj({ app: APP, element_index: INDEX, x: { type: "number" }, y: { type: "number" },
+    inputSchema: action({ app: APP, element_index: INDEX, x: { type: "number" }, y: { type: "number" },
       direction: { type: "string", enum: ["up", "down", "left", "right"] }, pages: { type: "number", description: "Fractional pages allowed. Defaults to 1" } }, ["app", "direction"]) },
   { name: "drag",
     description: "Drag from one point to another in screenshot pixel coordinates.",
-    inputSchema: obj({ app: APP, from_x: { type: "number" }, from_y: { type: "number" }, to_x: { type: "number" }, to_y: { type: "number" } }, ["app", "from_x", "from_y", "to_x", "to_y"]) },
+    inputSchema: action({ app: APP, from_x: { type: "number" }, from_y: { type: "number" }, to_x: { type: "number" }, to_y: { type: "number" } }, ["app", "from_x", "from_y", "to_x", "to_y"]) },
   { name: "set_value",
     description: "Set the value of a settable accessibility element (text fields, sliders, checkboxes). Replaces the whole value.",
-    inputSchema: obj({ app: APP, element_index: INDEX, value: { type: "string" } }, ["app", "element_index", "value"]) },
+    inputSchema: action({ app: APP, element_index: INDEX, value: { type: "string" } }, ["app", "element_index", "value"]) },
   { name: "select_text",
     description: "Select text inside a text element, or place the cursor before/after it. Give the text exactly as shown in the accessibility tree; use prefix/suffix to disambiguate repeats.",
-    inputSchema: obj({ app: APP, element_index: INDEX, text: { type: "string" }, prefix: { type: "string" }, suffix: { type: "string" },
+    inputSchema: action({ app: APP, element_index: INDEX, text: { type: "string" }, prefix: { type: "string" }, suffix: { type: "string" },
       selection: { type: "string", enum: ["text", "cursor_before", "cursor_after"], description: "Defaults to text" } }, ["app", "element_index", "text"]) },
   { name: "perform_secondary_action",
     description: "Invoke a secondary accessibility action listed for an element (e.g. Raise, Expand, Scroll Down).",
-    inputSchema: obj({ app: APP, element_index: INDEX, action: { type: "string" } }, ["app", "element_index", "action"]) },
+    inputSchema: action({ app: APP, element_index: INDEX, action: { type: "string" } }, ["app", "element_index", "action"]) },
+  { name: "start_audio_recording", audio: true,
+    description: "Start recording the computer's audio output (system loopback, not the microphone) while other actions continue, e.g. to capture a video's or call's sound. Recording stops by itself after max_duration_ms. Call stop_audio_recording to get the WAV.",
+    inputSchema: obj({ max_duration_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Stop automatically after this many milliseconds. Defaults to 60000 (max 300000)" } }, []) },
+  { name: "stop_audio_recording", audio: true,
+    description: "Stop the active computer audio recording and return the path of the saved 24 kHz stereo WAV file, with its duration and size. With include_audio, the WAV is also returned as MCP audio content (up to 10 MB).",
+    inputSchema: obj({ include_audio: { type: "boolean", description: "Also return the recording as MCP audio content. Defaults to false" } }, []) },
 ];
 
 // The user never wants Google Chrome opened or driven, in any form.
@@ -46,7 +62,7 @@ export const BLOCKED_APP = /chrome/i;
 
 export const TOOL_NAMES =new Set(TOOLS.map((t) => t.name));
 export const isReadOnly = (name) => !!TOOLS.find((t) => t.name === name)?.readOnly;
-export const publicTools = () => TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: false } }));
+export const publicTools = () => TOOLS.map(({ readOnly, audio, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: false } }));
 
 // Validates args; returns an error string or null.
 export function validate(name, args) {
@@ -61,9 +77,12 @@ export function validate(name, args) {
     if (p.type === "integer" && !Number.isInteger(Number(v))) return `${k} must be an integer`;
     if (p.type === "number" && !Number.isFinite(Number(v))) return `${k} must be a number`;
     if (p.type === "string" && typeof v !== "string") return `${k} must be a string`;
+    if (p.type === "boolean" && typeof v !== "boolean") return `${k} must be true or false`;
+    if ((p.minimum != null && Number(v) < p.minimum) || (p.maximum != null && Number(v) > p.maximum)) return `${k} must be from ${p.minimum} to ${p.maximum}`;
     if (p.enum && !p.enum.includes(v)) return `${k} must be one of ${p.enum.join(", ")}`;
   }
   if (args.app != null && BLOCKED_APP.test(args.app)) return `refusing to use ${args.app}: Google Chrome is blocked by the user`;
+  if (name === "click" && args.modifiers === "") return "modifiers must not be empty";
   if (name === "click" && args.element_index == null && (args.x == null || args.y == null)) return "click needs element_index or both x and y";
   if (name === "scroll" && args.element_index == null && (args.x == null || args.y == null)) return "scroll needs element_index or both x and y";
   return null;
@@ -80,16 +99,37 @@ globalThis.__cb ??= {
   },
 };`;
 
+// The engine's key names are case-sensitive and know only some modifier
+// spellings (live: "control", "option", "Cmd" are keyNotFound). Map the common
+// ones to names it accepts; every other token is passed through untouched.
+const MODIFIERS = { super: "super", cmd: "super", command: "super", "⌘": "super", ctrl: "ctrl", control: "ctrl", "⌃": "ctrl",
+  alt: "alt", option: "alt", opt: "alt", "⌥": "alt", shift: "shift", "⇧": "shift" };
+export function normalizeChord(chord) {
+  const keys = String(chord).split("+").map((k) => k.trim());
+  if (keys.some((k) => !k)) return chord; // e.g. "+" or "super++": leave for the engine to judge
+  return keys.map((k) => (Object.hasOwn(MODIFIERS, k.toLowerCase()) ? MODIFIERS[k.toLowerCase()] : k)).join("+");
+}
+
+// Typed as keystrokes only when it is one line of printable ASCII; anything
+// else is pasted, so "\n" can never turn into a Return press.
+export const TYPEABLE = /^[\x20-\x7e]*$/;
+const WAV_INLINE_MAX = 10 * 1024 * 1024;
+
 // Output before MARK (e.g. state auto-emitted by cua.getApp) is discarded.
 export function buildCell(name, args, mark) {
+  args = { ...args };
+  if (args.key != null) args.key = normalizeChord(args.key);
+  if (args.modifiers != null) args.modifiers = normalizeChord(args.modifiers);
   const A = JSON.stringify(args);
   const M = JSON.stringify(mark);
   const n = (k) => `Number(A.${k})`;
   const target = `(A.element_index != null ? ${n("element_index")} : [${n("x")}, ${n("y")}])`;
+  const hold = `...(A.hold_ms != null ? { durationMs: ${n("hold_ms")} } : {})`;
   const action = {
-    click: `await a.click(${target}, { mouseButton: A.mouse_button ?? "left", clickCount: A.click_count != null ? ${n("click_count")} : 1 });`,
-    type_text: `if (/^[\\x20-\\x7e\\t\\n]*$/.test(A.text)) await a.typeText(A.text); else await a.paste(A.text);`,
-    press_key: `await a.pressKey(A.key);`,
+    click: `await a.click(${target}, { mouseButton: A.mouse_button ?? "left", clickCount: A.click_count != null ? ${n("click_count")} : 1, ...(A.modifiers != null ? { key: A.modifiers } : {}), ${hold} });`,
+    type_text: `if (${TYPEABLE}.test(A.text)) await a.typeText(A.text); else await a.paste(A.text);`,
+    paste: `await a.paste(A.text, { format: A.format ?? "text" });`,
+    press_key: `if (A.hold_ms != null) await a.pressKey(A.key, { ${hold} }); else await a.pressKey(A.key);`,
     scroll: `await a.scroll(${target}, A.direction, A.pages != null ? Number(A.pages) : 1);`,
     drag: `await a.drag([${n("from_x")}, ${n("from_y")}], [${n("to_x")}, ${n("to_y")}]);`,
     set_value: `await a.setValue(${n("element_index")}, A.value);`,
@@ -107,11 +147,37 @@ try { r = await a.getAXStateAndScreenshot({ emit: false, disableDiffing: true })
 catch { a = await __cb.app(A.app, true); r = await a.getAXStateAndScreenshot({ emit: false, disableDiffing: true }); }
 nodeRepl.write(${M} + r.state);
 if (r.screenshot) await nodeRepl.emitImage(r.screenshot);`;
+  const audio = `const C = cua.computer;
+if (typeof C?.start_audio_recording !== "function") throw new Error("computer audio recording is not enabled in this engine (it needs SKY_ENABLE_AUDIO=1; the bridge sets it unless OPENAI_CUA_AUDIO=0)");
+nodeRepl.write(${M});\n`;
+  if (name === "start_audio_recording")
+    return head + audio + `const ms = A.max_duration_ms != null ? ${n("max_duration_ms")} : 60000;
+await C.start_audio_recording({ max_duration_ms: ms });
+nodeRepl.write("Recording computer audio (stops by itself after " + ms + " ms). Call stop_audio_recording to get the WAV.");`;
+  if (name === "stop_audio_recording")
+    return head + audio + `const au = await C.stop_audio_recording();
+const b = au.bytes, dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+let rate = 0, data = 0; // RIFF chunks: fmt (byte rate) and data (size)
+for (let o = 12; o + 8 <= b.length; o += 8 + dv.getUint32(o + 4, true) + (dv.getUint32(o + 4, true) & 1)) {
+  const id = String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
+  if (id === "fmt ") rate = dv.getUint32(o + 16, true);
+  if (id === "data") { data = dv.getUint32(o + 4, true); break; }
+}
+nodeRepl.write("Saved computer audio: " + au.filepath + "\\n" + (rate ? (data / rate).toFixed(2) + " s, " : "") + b.length + " bytes, WAV (24 kHz stereo)");
+if (A.include_audio) {
+  if (b.length <= ${WAV_INLINE_MAX}) await nodeRepl.emitAudio(au.data_url);
+  else nodeRepl.write("\\n(too large to return inline; read the file instead)");
+}`;
   return head + `const a = await __cb.app(A.app);
 nodeRepl.write(${M});
 ${action[name]}
-let s; try { s = await a.getAXState({ emit: false }); } catch (e) { s = "(state unavailable: " + e.message + ")"; }
-nodeRepl.write("Done. Updated accessibility state:\\n" + s);`;
+let s, shot;
+try {
+  if (A.screenshot) ({ state: s, screenshot: shot } = await a.getAXStateAndScreenshot({ emit: false }));
+  else s = await a.getAXState({ emit: false });
+} catch (e) { s = "(state unavailable: " + e.message + ")"; }
+nodeRepl.write("Done. Updated accessibility state:\\n" + s);
+if (A.screenshot) { if (shot) await nodeRepl.emitImage(shot); else nodeRepl.write("\\n(screenshot unavailable)"); }`;
 }
 
 // Keep only what the cell wrote after MARK.

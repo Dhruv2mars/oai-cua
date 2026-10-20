@@ -26,17 +26,40 @@ API. Arguments are embedded as JSON literals.
 
 - `get_app_state` returns the numbered accessibility tree plus a JPEG screenshot.
 - Actions return the updated accessibility state, as a diff.
-- Non-ASCII `type_text` goes through the engine's paste. The engine's own typing
-  drops characters such as `é` and `日`. The engine restores your clipboard
-  afterwards.
+- `type_text` types single-line printable ASCII as keystrokes. Text with a
+  newline, carriage return or tab, or any non-ASCII character, goes through the
+  engine's paste instead. That way a newline can never become a Return press
+  that submits a form, and characters the engine's own typing drops (`é`, `日`)
+  arrive intact. The engine restores your clipboard afterwards.
+- `paste` inserts plain text, or rich text rendered from Markdown (`format: "md"`)
+  or HTML (`format: "html"`). It goes to the current focus. The macOS engine
+  has no `element_index` for paste; only its browser tabs do.
+- `click` takes `modifiers`, a key chord held for the whole click (`"shift"`,
+  `"super"`, `"super+shift"`), and `hold_ms`, the mouse-down time (0–30000).
+  `press_key` takes `hold_ms` too. The engine's key names are case-sensitive
+  and it rejects `control`, `option` and `Cmd`, so the shim maps `cmd`,
+  `command`, `control`, `option`, `opt`, `⌘`, `⌃`, `⌥` and `⇧`, in any case,
+  to `super`, `ctrl`, `alt` and `shift`.
+- Every action accepts `screenshot: true` to also return a screenshot of the
+  state after the action, so a coordinate click can be checked in one call.
+- `start_audio_recording` and `stop_audio_recording` record the computer's
+  audio output (loopback, not the microphone) as a 24 kHz stereo WAV.
+  `stop_audio_recording` returns the file path and duration, and with
+  `include_audio: true` it also returns MCP audio content, up to 10 MB. The
+  engine only registers audio when started with `SKY_ENABLE_AUDIO=1` and
+  `NODE_REPL_ENABLE_AUDIO=1`. The shim sets both, unless
+  `OPENAI_CUA_AUDIO=0`. It accepts the engine's "record computer audio"
+  approval only during a `start_audio_recording` call and declines it at any
+  other time. The engine is kept alive until the recording ends.
 - The engine asks for per-app access approval. The shim grants it automatically.
   OpenAI's service still enforces its own denied and forbidden app policy.
 - **Google Chrome is blocked.** Any app name matching `chrome` is refused.
   Approval is also declined when the service resolves an app to Chrome, and the
   browser surface and Chrome backend are disabled.
 
-Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `press_key`,
-`scroll`, `drag`, `set_value`, `select_text`, `perform_secondary_action`.
+Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `paste`,
+`press_key`, `scroll`, `drag`, `set_value`, `select_text`,
+`perform_secondary_action`, `start_audio_recording`, `stop_audio_recording`.
 
 ### Engine lifecycle
 
@@ -90,6 +113,7 @@ Overrides:
 
 - `OPENAI_CUA_IDLE_MS`: idle release. Default 300000; 0 disables it.
 - `OPENAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
+- `OPENAI_CUA_AUDIO`: `0` turns computer-audio recording off.
 - `OPENAI_CUA_MCP_JSON`: path to a cua-repl manifest.
 - `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback.
 - `CODEX_HOME`, `OPENAI_CUA_STATE_DIR`.

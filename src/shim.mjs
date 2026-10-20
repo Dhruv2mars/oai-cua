@@ -20,19 +20,28 @@ const engine = new Engine({
   log,
   idleMs: Number(process.env.OPENAI_CUA_IDLE_MS ?? 300000),
   callTimeoutMs: Number(process.env.OPENAI_CUA_CALL_TIMEOUT_MS ?? 60000),
+  audio: process.env.OPENAI_CUA_AUDIO !== "0",
 });
 const MARK = `⟦cua-bridge:${randomUUID()}⟧`;
+
+// MCP audio content exists from protocol 2025-03-26 on.
+let clientProtocol = "2025-06-18";
+const audioContentOk = () => clientProtocol >= "2025-03-26";
 
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 
 export async function callTool(name, args = {}, signal) {
   const bad = validate(name, args);
   if (bad) return text(bad, true);
-  const code = buildCell(name, args, MARK);
+  const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
+  const code = buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK);
   for (let attempt = 0; ; attempt++) {
     try {
-      const r = await engine.run(code, undefined, signal);
+      const r = await engine.run(code, undefined, signal, { allowAudio: name === "start_audio_recording" });
       const out = extractOutput(r.content, MARK);
+      if (name === "start_audio_recording" && !r.isError) engine.keepAliveUntil(Date.now() + Number(args.max_duration_ms ?? 60000) + 5000);
+      if (name === "stop_audio_recording") engine.keepAliveUntil(0);
+      if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
         const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").slice(0, 1000).trim(); // REPL errors come first
         return text(msg || "computer-use action failed", true);
@@ -62,8 +71,9 @@ function serve() {
       switch (m.method) {
         case "initialize": {
           const v = m.params?.protocolVersion;
+          clientProtocol = PROTOCOLS.includes(v) ? v : "2025-06-18";
           return reply(m.id, {
-            protocolVersion: PROTOCOLS.includes(v) ? v : "2025-06-18",
+            protocolVersion: clientProtocol,
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: "openai-computer-use", version: VERSION },
             instructions: INSTRUCTIONS,
