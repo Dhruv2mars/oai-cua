@@ -155,7 +155,7 @@ export class Engine {
     const init = await this.#request(inst, "initialize", {
       protocolVersion: PROTOCOL,
       capabilities: { elicitation: {} },
-      clientInfo: { name: "openai-cua-bridge", version: "0.2.0" },
+      clientInfo: { name: "oai-cua", version: "0.2.0" },
     }, t);
     if (init.error || typeof init.result?.protocolVersion !== "string" || !init.result.capabilities?.tools)
       throw new EngineError(`engine rejected initialize: ${JSON.stringify(init.error || init.result).slice(0, 300)}`, "ENGINE_START");

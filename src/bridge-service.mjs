@@ -12,7 +12,7 @@ let client;
 
 async function sky() {
   if (client) return client;
-  const dirs = [process.env.OPENAI_CUA_NODE_MODULES, ...(process.env.NODE_REPL_NODE_MODULE_DIRS ?? "").split(":")].filter(Boolean);
+  const dirs = [process.env.OAI_CUA_NODE_MODULES, ...(process.env.NODE_REPL_NODE_MODULE_DIRS ?? "").split(":")].filter(Boolean);
   const file = dirs.map((d) => path.join(d, CLIENT)).find((f) => fs.existsSync(f));
   if (!file) throw new Error(`computer-use IPC client not found under ${dirs.join(", ") || "(no module dirs)"}`);
   client = (await import(file)).client;

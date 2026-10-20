@@ -8,7 +8,7 @@ Done = OpenAI's model-facing computer-use guidance reaches Claude at runtime (in
 - [x] First-use docs: capture from handshake + bootstrap output, pass through once per session
 - [x] Filter REPL "declared with const" warnings (found live)
 - [x] Tool descriptions: parity with OpenAI guidance
-- [x] skills/openai-computer-use/SKILL.md (own text) + install.mjs symlink with backup
+- [x] skills/oai-cua/SKILL.md (own text) + install.mjs symlink with backup
 - [x] Tests (fake engine emits bootstrap docs; resources; prompts; instructions budget; skill install)
 - [x] README + VERIFICATION
 - [x] Live probe: shim over stdio + fresh `claude -p --mcp-config` against worktree

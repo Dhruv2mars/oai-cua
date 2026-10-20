@@ -10,7 +10,7 @@ live probe of this worktree's shim shows each capability, PR squash-merged.
 - [x] Screenshot-only → next tree observation is full
 - [x] Diff whole entries (multi-line values), only changed value lines; full tree when diff isn't smaller
 - [x] batch tool: ordered steps, per-step validation, one cell, one state read per app, stop at first failure
-- [x] run_cua_js + reset_repl (opt-in OPENAI_CUA_ENABLE_JS=1, installer --enable-js/--disable-js)
+- [x] run_cua_js + reset_repl (opt-in OAI_CUA_ENABLE_JS=1, installer --enable-js/--disable-js)
 - [x] Chrome: static check; in-REPL guard proven impossible (engine freezes cua.computer) → removed; approval decline holds from scripts
 - [x] Output limit (~25k tokens / 8 images) for all tool results
 - [x] Bridge cells don't leak top-level bindings into the user's REPL namespace

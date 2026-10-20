@@ -25,8 +25,8 @@ function sandbox(env = {}) {
   fs.writeFileSync(log, "");
   return {
     dir, log, state: path.join(dir, "state"),
-    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OPENAI_CUA_APP: path.join(dir, "ChatGPT.app"), OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
-      OPENAI_CUA_RESTORE_FOCUS: "0", OPENAI_CUA_APPROVAL: "", ...env },
+    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OAI_CUA_APP: path.join(dir, "ChatGPT.app"), OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
+      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -105,7 +105,7 @@ describe("per-app approval", () => {
   });
 
   test("deny-unknown declines unapproved apps but honours always-allowed ones; Chrome never asks", async () => {
-    const sb = sandbox({ FAKE_ELICIT: "1", OPENAI_CUA_APPROVAL: "deny-unknown" });
+    const sb = sandbox({ FAKE_ELICIT: "1", OAI_CUA_APPROVAL: "deny-unknown" });
     let s = startShim(sb);
     await s.init();
     expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBe(true);
@@ -121,7 +121,7 @@ describe("per-app approval", () => {
   });
 
   test("the call timeout pauses while the user answers", async () => {
-    const sb = sandbox({ FAKE_ELICIT: "1", OPENAI_CUA_CALL_TIMEOUT_MS: "300" }), s = startShim(sb);
+    const sb = sandbox({ FAKE_ELICIT: "1", OAI_CUA_CALL_TIMEOUT_MS: "300" }), s = startShim(sb);
     s.onRequest = async () => { await sleep(1200); return { action: "accept", content: {} }; };
     await s.init({ elicitation: {} });
     const r = await s.call("get_app_state", { app: "TextEdit" });
@@ -172,7 +172,7 @@ describe("stop, takeover and turns", () => {
   });
 
   test("the turn ends after Claude goes quiet", async () => {
-    const sb = sandbox({ OPENAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await sleep(500);

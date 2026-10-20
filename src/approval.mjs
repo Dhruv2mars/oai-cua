@@ -5,7 +5,7 @@
 //   Chrome → always declined (by the bundle id the service resolved)
 //   approved earlier this session, or always-allowed on disk → accepted
 //   otherwise → the user is asked through MCP elicitation, if the client
-//   supports it, else the fallback policy OPENAI_CUA_APPROVAL decides:
+//   supports it, else the fallback policy OAI_CUA_APPROVAL decides:
 //     auto (default)  accept, as before this feature existed
 //     prompt          ask with a native macOS dialog
 //     deny-unknown    decline apps that are not already approved
@@ -44,9 +44,9 @@ export function promptText(r) {
 }
 
 export class Approver {
-  constructor({ policy = process.env.OPENAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now } = {}) {
+  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now } = {}) {
     this.policy = POLICIES.includes(policy) ? policy : "auto";
-    if (policy && policy !== this.policy) log(`unknown OPENAI_CUA_APPROVAL=${policy}; using auto`);
+    if (policy && policy !== this.policy) log(`unknown OAI_CUA_APPROVAL=${policy}; using auto`);
     Object.assign(this, { file, log, dialog, now });
     this.session = new Set();   // keys approved in this Claude session
     this.elicit = null;         // (request, signal) → Promise<{action, content}>, set when the client can elicit

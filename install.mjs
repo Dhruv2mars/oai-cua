@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Installer. Preflights everything (including a live engine call) before
 // changing any configuration, then:
-//   1. registers the shim with Claude Code (user scope of $CLAUDE_CONFIG_DIR);
+//   1. registers the shim with Claude Code (user scope of $CLAUDE_CONFIG_DIR),
+//      replacing the pre-rename "openai-computer-use" registration;
 //   2. denies Claude's built-in "computer-use" server so GUI work routes here;
 //   3. removes the legacy v0.1 Codex worker registration and its processes;
-//   4. links the repo's Claude Code skill into $CLAUDE_CONFIG_DIR/skills.
+//   4. links the repo's Claude Code skill into $CLAUDE_CONFIG_DIR/skills
+//      (and drops the pre-rename skill link).
 // Flags: --keep-native (skip step 2), --skip-live (skip the live preflight),
 // --skip-skill (skip step 4), --enable-js / --disable-js (opt in/out of
 // run_cua_js + reset_repl; without either, the current registration's choice is kept).
@@ -17,13 +19,14 @@ import { STATE_DIR, findRuntime } from "./src/lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHIM = path.join(HERE, "src/shim.mjs");
-const NAME = "openai-computer-use";
+const NAME = "oai-cua";
 const LEGACY = "openai-cua-worker";
+const OLD = "openai-computer-use"; // pre-rename server and skill name
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || os.homedir();
 const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 const SETTINGS = path.join(CLAUDE_HOME, "settings.json");
-const SKILL = "openai-computer-use";
-const PERSIST = ["CODEX_HOME", "OPENAI_CUA_APP", "OPENAI_CUA_MCP_JSON", "OPENAI_CUA_IDLE_MS", "OPENAI_CUA_CALL_TIMEOUT_MS", "OPENAI_CUA_STATE_DIR", "OPENAI_CUA_ENABLE_JS"];
+const SKILL = "oai-cua";
+const PERSIST = ["CODEX_HOME", "OAI_CUA_APP", "OAI_CUA_MCP_JSON", "OAI_CUA_IDLE_MS", "OAI_CUA_CALL_TIMEOUT_MS", "OAI_CUA_STATE_DIR", "OAI_CUA_ENABLE_JS"];
 const flag = (f) => process.argv.includes(f);
 const ok = (m) => console.log("✓ " + m);
 const die = (m) => { console.error("✗ " + m + "\nNo configuration was changed."); process.exit(1); };
@@ -55,14 +58,18 @@ if (!flag("--keep-native")) {
   if (settings.deniedMcpServers != null && !Array.isArray(settings.deniedMcpServers)) die(`${SETTINGS}: deniedMcpServers is not an array`);
 }
 // Current registration, restored if replacing it fails.
-let previous = null;
-try { previous = JSON.parse(fs.readFileSync(path.join(CLAUDE_DIR, ".claude.json"), "utf8"))?.mcpServers?.[NAME] ?? null; }
+let previous = null, oldJs = false;
+try {
+  const servers = JSON.parse(fs.readFileSync(path.join(CLAUDE_DIR, ".claude.json"), "utf8"))?.mcpServers;
+  previous = servers?.[NAME] ?? null;
+  oldJs = servers?.[OLD]?.env?.OPENAI_CUA_ENABLE_JS === "1"; // pre-rename registration
+}
 catch (e) { if (e.code !== "ENOENT") die(`cannot parse ${path.join(CLAUDE_DIR, ".claude.json")}: ${e.message}`); }
 // run_cua_js is opt-in; without a flag, keep the current registration's choice.
 if (flag("--enable-js") && flag("--disable-js")) die("--enable-js and --disable-js conflict");
-if (flag("--enable-js") || (!flag("--disable-js") && !env.OPENAI_CUA_ENABLE_JS && previous?.env?.OPENAI_CUA_ENABLE_JS === "1")) env.OPENAI_CUA_ENABLE_JS = "1";
-if (flag("--disable-js")) delete env.OPENAI_CUA_ENABLE_JS;
-ok(`run_cua_js: ${env.OPENAI_CUA_ENABLE_JS === "1" ? "enabled" : "disabled (enable with --enable-js)"}`);
+if (flag("--enable-js") || (!flag("--disable-js") && !env.OAI_CUA_ENABLE_JS && (previous?.env?.OAI_CUA_ENABLE_JS === "1" || oldJs))) env.OAI_CUA_ENABLE_JS = "1";
+if (flag("--disable-js")) delete env.OAI_CUA_ENABLE_JS;
+ok(`run_cua_js: ${env.OAI_CUA_ENABLE_JS === "1" ? "enabled" : "disabled (enable with --enable-js)"}`);
 if (!flag("--skip-live")) {
   const r = run(node, [SHIM, "--doctor"]);
   if (r.status !== 0) die(`live engine check failed:\n${r.stdout}${r.stderr}`);
@@ -93,6 +100,7 @@ if (add.status !== 0) {
 const got = run(claude, ["mcp", "get", NAME]);
 if (got.status !== 0 || !got.stdout.includes(SHIM)) { console.error(got.stdout + got.stderr); process.exit(1); }
 ok(`registered ${NAME} in ${path.join(CLAUDE_DIR, ".claude.json")}${/connected/i.test(got.stdout) ? " (connected)" : ""}`);
+if (run(claude, ["mcp", "remove", "--scope", "user", OLD]).status === 0) ok(`removed pre-rename registration ${OLD}`);
 
 // 2. Deny Claude's built-in computer-use server (supported user-level denylist).
 if (!flag("--keep-native")) {
@@ -126,6 +134,11 @@ if (legacyPids.length) ok(`stopped ${legacyPids.length} legacy worker process(es
 // 4. Skill: a symlink, so it follows the repo like the registered shim does.
 // Anything already at the target is backed up first, then replaced.
 if (!flag("--skip-skill")) {
+  const old = path.join(CLAUDE_HOME, "skills", OLD);
+  if (fs.lstatSync(old, { throwIfNoEntry: false })?.isSymbolicLink() && fs.readlinkSync(old) === path.join(HERE, "skills", OLD)) {
+    fs.rmSync(old);
+    ok(`removed pre-rename skill link ${old}`);
+  }
   const src = path.join(HERE, "skills", SKILL);
   const dest = path.join(CLAUDE_HOME, "skills", SKILL);
   const cur = fs.lstatSync(dest, { throwIfNoEntry: false });

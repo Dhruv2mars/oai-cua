@@ -1,12 +1,13 @@
 // Shared helpers: paths, private logging, NDJSON framing, runtime discovery.
+import "./env.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
-export const STATE_DIR = process.env.OPENAI_CUA_STATE_DIR || path.join(os.homedir(), ".openai-cua-bridge");
+export const STATE_DIR = process.env.OAI_CUA_STATE_DIR || path.join(os.homedir(), ".oai-cua");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-export const CHATGPT_APP = process.env.OPENAI_CUA_APP || "/Applications/ChatGPT.app";
+export const CHATGPT_APP = process.env.OAI_CUA_APP || "/Applications/ChatGPT.app";
 
 export function logger(name) {
   const file = path.join(STATE_DIR, name);
@@ -47,7 +48,7 @@ export function writeLine(stream, obj) {
 // "unified-computer-use" plugin). Prefers the plugin manifest the app wrote,
 // so app updates carry their own paths/env; falls back to the app bundle.
 export function findRuntime() {
-  const override = process.env.OPENAI_CUA_MCP_JSON;
+  const override = process.env.OAI_CUA_MCP_JSON;
   const candidates = override ? [override] : pluginManifests();
   for (const file of candidates) {
     try {

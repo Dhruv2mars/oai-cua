@@ -1,6 +1,6 @@
 // Tools backed by the MCP servers inside OpenAI's SkyComputerUseClient:
 // Record & Replay (`event-stream mcp`) and, only when the user opts in with
-// OPENAI_CUA_COMPUTER_HISTORY=1, Computer History (`computer-history mcp`).
+// OAI_CUA_COMPUTER_HISTORY=1, Computer History (`computer-history mcp`).
 // Consent prompts from the service are forwarded to the human through the
 // Claude client's elicitation support and are never answered by the bridge.
 import { NativeServer } from "./native.mjs";
@@ -57,7 +57,7 @@ const HISTORY_TOOLS = [
     inputSchema: obj({}) },
 ];
 
-export const historyEnabled = () => process.env.OPENAI_CUA_COMPUTER_HISTORY === "1";
+export const historyEnabled = () => process.env.OAI_CUA_COMPUTER_HISTORY === "1";
 const tools = () => [...RECORD_TOOLS, ...(historyEnabled() ? HISTORY_TOOLS : [])];
 export const isServiceTool = (name) => tools().some((t) => t.name === name);
 export const serviceTools = () => tools().map(({ native, readOnly, timeoutMs, ...t }) => ({

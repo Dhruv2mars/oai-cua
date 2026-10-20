@@ -127,7 +127,7 @@ TOOLS.push(
 // The user never wants Google Chrome opened or driven, in any form.
 export const BLOCKED_APP = /chrome/i;
 
-export const jsEnabled = () => process.env.OPENAI_CUA_ENABLE_JS === "1";
+export const jsEnabled = () => process.env.OAI_CUA_ENABLE_JS === "1";
 const tool = (name) => TOOLS.find((t) => t.name === name && (!t.js || jsEnabled()));
 export const TOOL_NAMES = new Set(TOOLS.filter((t) => tool(t.name)).map((t) => t.name));
 export const isReadOnly = (name) => !!tool(name)?.readOnly;
@@ -137,7 +137,7 @@ export const publicTools = () => TOOLS.filter((t) => tool(t.name)).map(({ readOn
 export function validate(name, args) {
   const t = tool(name);
   if (!t) return TOOLS.some((x) => x.name === name)
-    ? `${name} is disabled. It runs arbitrary JavaScript, so it must be enabled explicitly: set OPENAI_CUA_ENABLE_JS=1 in the server's env (node install.mjs --enable-js) and reconnect.`
+    ? `${name} is disabled. It runs arbitrary JavaScript, so it must be enabled explicitly: set OAI_CUA_ENABLE_JS=1 in the server's env (node install.mjs --enable-js) and reconnect.`
     : `unknown tool: ${name}`;
   if (args == null || typeof args !== "object" || Array.isArray(args)) return "arguments must be an object";
   const { properties, required } = t.inputSchema;
@@ -250,7 +250,7 @@ nodeRepl.write(${M} + JSON.stringify({ tree: r.tree ?? null, shot: !!r.shot }));
 if (r.shot) await nodeRepl.emitImage(r.shot);
 }`;
   const audio = `const C = cua.computer;
-if (typeof C?.start_audio_recording !== "function") throw new Error("computer audio recording is not enabled in this engine (it needs SKY_ENABLE_AUDIO=1; the bridge sets it unless OPENAI_CUA_AUDIO=0)");
+if (typeof C?.start_audio_recording !== "function") throw new Error("computer audio recording is not enabled in this engine (it needs SKY_ENABLE_AUDIO=1; the bridge sets it unless OAI_CUA_AUDIO=0)");
 nodeRepl.write(${M});\n`;
   if (name === "start_audio_recording")
     return head + audio + `const ms = A.max_duration_ms != null ? ${n("max_duration_ms")} : 60000;
