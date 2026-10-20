@@ -56,8 +56,12 @@ describe("protocol", () => {
     expect(init.protocolVersion).toBe("2025-06-18");
     expect(init.instructions).toContain("get_app_state");
     const tools = (await s.rpc("tools/list", {})).result.tools;
-    expect(tools.map((t) => t.name).sort()).toEqual(["click", "drag", "get_app_state", "list_apps", "perform_secondary_action", "press_key", "scroll", "select_text", "set_value", "type_text"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
     for (const t of tools) expect(t.inputSchema.properties).toBeDefined();
+    for (const t of tools) expect(Object.keys(t).sort()).toEqual(["annotations", "description", "inputSchema", "name"]);
+    for (const n of ["click", "type_text", "paste", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"])
+      expect(tools.find((t) => t.name === n).inputSchema.properties.screenshot.type).toBe("boolean");
+    expect(tools.find((t) => t.name === "click").inputSchema.properties.hold_ms).toMatchObject({ type: "integer", minimum: 0, maximum: 30000 });
     expect(tools.find((t) => t.name === "type_text").inputSchema.required).toEqual(["app", "text"]);
     expect(spawns(sb).length).toBe(0);
     expect((await s.rpc("bogus/method", {})).error.code).toBe(-32601);
@@ -111,6 +115,102 @@ describe("tools", () => {
     ]);
   });
 
+  test("click modifiers + hold, press_key hold, modifier aliases, paste formats, multi-line text pasted", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    for (const [tool, args] of [
+      ["click", { element_index: 3, modifiers: "Cmd + Shift", hold_ms: 1200 }],
+      ["click", { x: 5, y: 6, modifiers: "option", hold_ms: "0" }],
+      ["press_key", { key: "control+Option+Left", hold_ms: 750 }],
+      ["press_key", { key: "COMMAND+z" }],
+      ["press_key", { key: "Control_L+super+plus" }],
+      ["type_text", { text: "line one\nline two" }],
+      ["type_text", { text: "a\tb" }],
+      ["type_text", { text: "carriage\r" }],
+      ["type_text", { text: "single line ~!@#" }],
+      ["paste", { text: "# Title\n\n**bold**", format: "md" }],
+      ["paste", { text: "<b>hi</b>", format: "html" }],
+      ["paste", { text: "plain" }],
+    ]) expect((await s.call(tool, { app: "TextEdit", ...args })).isError).toBeUndefined();
+    expect(sb.events().filter((e) => e.ev === "action").map((e) => [e.method, e.args])).toEqual([
+      ["click", [3, { mouseButton: "left", clickCount: 1, key: "super+shift", durationMs: 1200 }]],
+      ["click", [[5, 6], { mouseButton: "left", clickCount: 1, key: "alt", durationMs: 0 }]],
+      ["pressKey", ["ctrl+alt+Left", { durationMs: 750 }]],
+      ["pressKey", ["super+z"]],
+      ["pressKey", ["Control_L+super+plus"]],
+      ["paste", ["line one\nline two"]],
+      ["paste", ["a\tb"]],
+      ["paste", ["carriage\r"]],
+      ["typeText", ["single line ~!@#"]],
+      ["paste", ["# Title\n\n**bold**", { format: "md" }]],
+      ["paste", ["<b>hi</b>", { format: "html" }]],
+      ["paste", ["plain", { format: "text" }]],
+    ]);
+  });
+
+  test("screenshot: true returns the post-action screenshot with the state", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    const plain = await s.call("click", { app: "TextEdit", x: 1, y: 2 });
+    expect(plain.content.map((c) => c.type)).toEqual(["text"]);
+    for (const [tool, args] of [["click", { x: 1, y: 2 }], ["press_key", { key: "Tab" }], ["paste", { text: "x" }], ["scroll", { element_index: 1, direction: "up" }]]) {
+      const r = await s.call(tool, { app: "TextEdit", ...args, screenshot: true });
+      expect(r.content.map((c) => c.type)).toEqual(["text", "image"]);
+      expect(textOf(r)).toContain("tree of TextEdit é日");
+      expect(r.content[1]).toEqual({ type: "image", mimeType: "image/jpeg", data: "/9j/4A==" });
+    }
+  });
+
+  test("audio: start/stop return the WAV path, duration and optional MCP audio; approval only for start", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("stop_audio_recording"))).toContain("no active audio recording");
+    const start = await s.call("start_audio_recording", { max_duration_ms: 2000 });
+    expect(textOf(start)).toContain("stops by itself after 2000 ms");
+    const stop = await s.call("stop_audio_recording", { include_audio: true });
+    expect(textOf(stop)).toContain("Saved computer audio: /tmp/fake-computer-audio.wav\n0.50 s, 48044 bytes");
+    expect(stop.content.at(-1).type).toBe("audio");
+    expect(stop.content.at(-1).mimeType).toBe("audio/wav");
+    expect(Buffer.from(stop.content.at(-1).data, "base64").subarray(0, 4).toString()).toBe("RIFF");
+    await s.call("start_audio_recording", {});
+    expect((await s.call("stop_audio_recording")).content.map((c) => c.type)).toEqual(["text"]);
+    expect(sb.events().filter((e) => e.ev === "audio" && e.method === "start").map((e) => e.input)).toEqual([{ max_duration_ms: 2000 }, { max_duration_ms: 60000 }]);
+    expect(sb.events().filter((e) => e.ev === "audio-elicit").map((e) => e.action)).toEqual(["accept", "accept"]);
+    expect(spawns(sb)[0].audio).toEqual(["1", "1"]);
+  });
+
+  test("audio approval requested by any other cell is declined", async () => {
+    const sb = sandbox({ FAKE_AUDIO_ELICIT_ON_CLICK: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("click", { app: "TextEdit", element_index: 1 });
+    await s.call("start_audio_recording", {});
+    await s.call("click", { app: "TextEdit", element_index: 1 });
+    expect(sb.events().filter((e) => e.ev === "audio-elicit").map((e) => e.action)).toEqual(["decline", "accept", "decline"]);
+  });
+
+  test("audio: OPENAI_CUA_AUDIO=0 disables it; oversize WAV and old protocols skip inline audio", async () => {
+    const off = sandbox({ OPENAI_CUA_AUDIO: "0" }), s = startShim(off);
+    await s.init();
+    const r = await s.call("start_audio_recording", {});
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("not enabled");
+    expect(spawns(off)[0].audio).toEqual(["0", "0"]);
+
+    const big = sandbox({ FAKE_WAV_BYTES: String(11 * 1024 * 1024) }), b = startShim(big);
+    await b.init();
+    await b.call("start_audio_recording", {});
+    const rb = await b.call("stop_audio_recording", { include_audio: true });
+    expect(rb.content.map((c) => c.type)).toEqual(["text", "text"]);
+    expect(textOf(rb)).toContain("too large to return inline");
+
+    const old = sandbox(), o = startShim(old);
+    await o.rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "0" } });
+    await o.call("start_audio_recording", {});
+    const ro = await o.call("stop_audio_recording", { include_audio: true });
+    expect(ro.content.some((c) => c.type === "audio")).toBe(false);
+    expect(textOf(ro)).toContain("needs MCP protocol 2025-03-26");
+  });
+
   test("validation errors and Chrome block never reach the engine", async () => {
     const sb = sandbox(), s = startShim(sb);
     await s.init();
@@ -119,6 +219,18 @@ describe("tools", () => {
     expect(textOf(await s.call("click", { app: "TextEdit" }))).toContain("element_index or both x and y");
     expect(textOf(await s.call("type_text", { app: "TextEdit" }))).toContain("missing required argument: text");
     expect(textOf(await s.call("nope", {}))).toContain("unknown tool");
+    for (const [tool, args, msg] of [
+      ["click", { app: "TextEdit", element_index: 1, hold_ms: 30001 }, "hold_ms must be from 0 to 30000"],
+      ["click", { app: "TextEdit", element_index: 1, hold_ms: -1 }, "hold_ms must be from 0 to 30000"],
+      ["press_key", { app: "TextEdit", key: "a", hold_ms: 1.5 }, "hold_ms must be an integer"],
+      ["click", { app: "TextEdit", element_index: 1, modifiers: "" }, "modifiers must not be empty"],
+      ["click", { app: "TextEdit", element_index: 1, screenshot: "yes" }, "screenshot must be true or false"],
+      ["paste", { app: "TextEdit", text: "x", format: "rtf" }, "format must be one of text, md, html"],
+      ["paste", { app: "TextEdit" }, "missing required argument: text"],
+      ["start_audio_recording", { max_duration_ms: 50 }, "max_duration_ms must be from 100 to 300000"],
+      ["start_audio_recording", { max_duration_ms: 300001 }, "max_duration_ms must be from 100 to 300000"],
+      ["stop_audio_recording", { include_audio: "true" }, "include_audio must be true or false"],
+    ]) expect(textOf(await s.call(tool, args))).toContain(msg);
     expect(spawns(sb).length).toBe(0);
   });
 
@@ -254,6 +366,18 @@ describe("lifecycle", () => {
     await sleep(100);
     expect(alive(pid)).toBe(false);
     expect(alive(grandchild)).toBe(false);
+  });
+
+  test("an audio recording keeps the engine from idle release until it is stopped", async () => {
+    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "150" }), s = startShim(sb);
+    await s.init();
+    await s.call("start_audio_recording", { max_duration_ms: 100 }); // kept for 100 ms + 5 s grace
+    await sleep(450);
+    expect(sb.events().some((e) => e.ev === "eof" || e.ev === "sigterm")).toBe(false);
+    expect((await s.call("stop_audio_recording")).isError).toBeUndefined();
+    await sleep(450);
+    expect(sb.events().some((e) => e.ev === "eof" || e.ev === "sigterm")).toBe(true);
+    expect(spawns(sb).length).toBe(1);
   });
 
   test("40 concurrent calls share one engine", async () => {

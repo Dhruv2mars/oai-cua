@@ -15,8 +15,9 @@ export class EngineError extends Error {
 }
 
 export class Engine {
-  constructor({ log = () => {}, idleMs = 300000, startTimeoutMs = 45000, callTimeoutMs = 60000, runtime = findRuntime } = {}) {
-    Object.assign(this, { log, idleMs, startTimeoutMs, callTimeoutMs, runtime });
+  constructor({ log = () => {}, idleMs = 300000, startTimeoutMs = 45000, callTimeoutMs = 60000, runtime = findRuntime, audio = true } = {}) {
+    Object.assign(this, { log, idleMs, startTimeoutMs, callTimeoutMs, runtime, audio });
+    this.keepUntil = 0;         // no idle release before this time (an audio recording is running)
     this.cur = null;            // live instance
     this.queue = Promise.resolve(); // cells run one at a time per engine
     this.busy = 0;              // queued + running cells
@@ -26,30 +27,44 @@ export class Engine {
 
   // Run a JavaScript cell. Resolves { content, isError }; rejects EngineError.
   // A cancelled cell is skipped if still queued; if running, its engine is
-  // stopped so the action cannot complete later.
-  run(code, timeoutMs = this.callTimeoutMs, signal) {
+  // stopped so the action cannot complete later. allowAudio lets this cell's
+  // audio-recording approval through; every other cell's is declined.
+  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false } = {}) {
     this.busy++;
     clearTimeout(this.idleTimer);
     const job = this.queue.then(() => {
       if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
-      return this.#exec(code, timeoutMs, signal);
+      return this.#exec(code, timeoutMs, signal, allowAudio);
     });
     this.queue = job.catch(() => {});
-    return job.finally(() => {
-      if (--this.busy === 0 && this.cur && this.idleMs > 0) {
-        this.idleTimer = setTimeout(() => this.busy === 0 && this.stop("idle"), this.idleMs);
-        this.idleTimer.unref?.();
-      }
-    });
+    return job.finally(() => { this.busy--; this.#armIdle(); });
   }
 
-  async #exec(code, timeoutMs, signal) {
+  #armIdle() {
+    if (this.busy > 0 || !this.cur || this.idleMs <= 0) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      if (this.busy) return;
+      if (Date.now() < this.keepUntil) return this.#armIdle();
+      this.stop("idle");
+    }, Math.max(this.idleMs, this.keepUntil - Date.now()));
+    this.idleTimer.unref?.();
+  }
+
+  // Keep the current engine (and so its audio recording) from idle release until `until`.
+  keepAliveUntil(until) {
+    this.keepUntil = until;
+    this.#armIdle();
+  }
+
+  async #exec(code, timeoutMs, signal, allowAudio) {
     const inst = await this.#ensure();
     if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
     const onAbort = () => this.#retire(inst, "cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
+    inst.allowAudio = allowAudio;
     const r = await this.#request(inst, "tools/call", { name: "js", arguments: { code, timeout_ms: timeoutMs } }, timeoutMs + Math.min(10000, timeoutMs), true)
-      .finally(() => signal?.removeEventListener("abort", onAbort));
+      .finally(() => { inst.allowAudio = false; signal?.removeEventListener("abort", onAbort); });
     if (r.error) throw new EngineError(`engine error: ${r.error.message || JSON.stringify(r.error)}`, "ENGINE_RPC");
     return { content: r.result?.content || [], isError: !!r.result?.isError };
   }
@@ -72,8 +87,11 @@ export class Engine {
     this.log(`engine#${inst.id} start ${rt.command} (${rt.source})`);
     const proc = spawn(rt.command, rt.args, {
       cwd: os.homedir(),
-      // Desktop apps only: no browser surface, no Chrome backend.
-      env: { ...process.env, ...rt.env, CUA_REPL_ENABLED_SURFACES: "computer", BROWSER_USE_AVAILABLE_BACKENDS: "" },
+      // Desktop apps only: no browser surface, no Chrome backend. The audio
+      // flags only register cua.computer.start/stop_audio_recording and
+      // nodeRepl.emitAudio; starting a recording still needs approval below.
+      env: { ...process.env, ...rt.env, CUA_REPL_ENABLED_SURFACES: "computer", BROWSER_USE_AVAILABLE_BACKENDS: "",
+        SKY_ENABLE_AUDIO: this.audio ? "1" : "0", NODE_REPL_ENABLE_AUDIO: this.audio ? "1" : "0" },
       stdio: ["pipe", "pipe", "pipe"],
       detached: true, // own process group, so node_repl descendants are killed with it
     });
@@ -149,7 +167,8 @@ export class Engine {
       if (m.method === "elicitation/create") {
         const what = m.params?.message || "elicitation";
         const target = `${what} ${JSON.stringify(m.params?._meta?.tool_params ?? {})}`;
-        if (BLOCKED_APP.test(target)) { // canonical bundle id from the service
+        const audio = m.params?._meta?.tool_name === "start_audio_recording" || /record computer audio/i.test(what);
+        if (BLOCKED_APP.test(target) || (audio && !inst.allowAudio)) { // canonical bundle id from the service
           this.log(`engine#${inst.id} declined: ${what}`);
           reply = { result: { action: "decline" } };
         } else {
@@ -182,6 +201,7 @@ export class Engine {
   // Stops the current engine; resolves once its whole process group is gone.
   stop(why = "stop") {
     clearTimeout(this.idleTimer);
+    this.keepUntil = 0;
     return this.cur ? this.#retire(this.cur, why) : Promise.resolve();
   }
 
