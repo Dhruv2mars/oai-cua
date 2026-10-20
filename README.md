@@ -80,11 +80,43 @@ API. Arguments are embedded as JSON literals.
   `include_audio: true` it also returns MCP audio content, up to 10 MB. The
   engine only registers audio when started with `SKY_ENABLE_AUDIO=1` and
   `NODE_REPL_ENABLE_AUDIO=1`. The shim sets both, unless
-  `OPENAI_CUA_AUDIO=0`. It accepts the engine's "record computer audio"
-  approval only during a `start_audio_recording` call and declines it at any
-  other time. The engine is kept alive until the recording ends.
-- The engine asks for per-app access approval. The shim grants it automatically.
+  `OPENAI_CUA_AUDIO=0`. It considers the engine's "record computer audio"
+  approval only during a `start_audio_recording` call, through the approval
+  flow below, and declines it at any other time. The engine is kept alive until the recording ends.
+- **Per-app approval.** The engine asks before it uses each app. The shim
+  shows you that request through MCP elicitation, with the app, its bundle id,
+  OpenAI's risk level and an "Always allow" choice. It asks once per app per
+  session. Always-allowed apps are saved in `~/.openai-cua-bridge/approvals.json`
+  (mode `0600`). Delete an entry to be asked again. Some clients advertise
+  elicitation but answer it instantly with `cancel`, which headless Claude Code
+  does in about 4 ms. For those clients, and for clients without elicitation,
+  `OPENAI_CUA_APPROVAL` decides:
+  - `auto` (the default) accepts.
+  - `prompt` shows a native macOS dialog.
+  - `deny-unknown` declines apps that are not already allowed.
+
   OpenAI's service still enforces its own denied and forbidden app policy.
+- **Stop and takeover.** `stop_app` ends an app's session, like the menu-bar
+  "Stop" in ChatGPT. Without `app`, it stops every app the session used.
+  If the user takes over an app mid-action:
+  - `press_key`, `type_text` and `paste` refresh the state and retry once.
+  - Index and coordinate actions return the error, fresh state and an
+    instruction to hand back to the user.
+
+  When the user stops a session, Claude is told to stop and hand back.
+- **Actionable errors.** Raw engine errors gain a "What to do" line. The engine
+  reports codes like `-10005` only as text. Covered cases include a stale
+  element, a missing window, an unknown or ambiguous app, a declined approval,
+  missing permissions, a locked screen, and a user stop or takeover. If the
+  engine rejects a display name, the shim retries it once by the bundle id that
+  `list_apps` reports for it.
+- **Focus restore.** Some apps bring themselves to the front when they get
+  background input. Helium does when it opens a tab. During each action the
+  shim watches app activations. If the target app takes the front, it
+  re-activates the app you were using within about 100 ms. This uses a small
+  Swift helper that is compiled once into `~/.openai-cua-bridge/bin`; without
+  `swiftc` it falls back to `osascript`. Set `OPENAI_CUA_RESTORE_FOCUS=0` to
+  turn it off.
 - **Google Chrome is blocked.** Any app name matching `chrome` is refused, in
   every tool, batch step and script. App-access approval is declined when the
   service resolves an app to Chrome. The bridge answers approval outside the
@@ -97,7 +129,7 @@ API. Arguments are embedded as JSON literals.
 
 Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `paste`,
 `press_key`, `scroll`, `drag`, `set_value`, `select_text`,
-`perform_secondary_action`, `batch`, `start_audio_recording`,
+`perform_secondary_action`, `batch`, `stop_app`, `start_audio_recording`,
 `stop_audio_recording`, the opt-in `run_cua_js` and `reset_repl`, plus the `browser_*` tools
 for Helium (below).
 
@@ -231,9 +263,28 @@ Other endpoints: `OPENAI_CUA_HELIUM_CDP` (port or `ws://` URL) and
 | Session ends (stdin EOF or SIGINT) | The engine's whole process group is stopped, with SIGKILL after 1.5s. No orphaned processes are left. |
 | A call is cancelled | If still queued, it never runs. If running, its engine is stopped. |
 | Startup | Readiness means a real `cua.getState` with no service errors. A broken or unauthorized service returns a precise error, never a false "ready". |
+| Approval prompt open | The call's timeout clock pauses until you answer. |
 
 Several Claude sessions run independent engines. OpenAI's service serves them
 concurrently.
+
+### Turns
+
+OpenAI's service scopes some state to a *turn*. A stop lasts until the turn
+ends. A late call from an ended turn is refused. MCP has no turn boundaries, so
+every call carries this session's turn id, and the shim ends the turn when one
+of these happens:
+
+- Claude makes no calls for `OPENAI_CUA_TURN_IDLE_MS` (default 60000; 0 disables
+  this).
+- A call is cancelled, for example because you interrupted Claude.
+- `stop_app` runs. The app is then released without staying blocked.
+
+At turn end, the shim sends the service's turn-ended request through a small
+trusted `node_repl` service of its own (`src/bridge-service.mjs`). That
+service loads OpenAI's IPC client from the installed app at runtime, and only
+allows resolve, stop-app and turn-ended requests. The shim also calls cua-repl's
+`turn_ended` lifecycle tool. The next call starts a new turn.
 
 ## Requirements
 
@@ -277,6 +328,10 @@ Overrides:
 - `OPENAI_CUA_IDLE_MS`: idle release. Default 300000; 0 disables it.
 - `OPENAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
 - `OPENAI_CUA_AUDIO`: `0` turns computer-audio recording off.
+- `OPENAI_CUA_APPROVAL`: approval fallback, `auto` (default), `prompt` or
+  `deny-unknown`.
+- `OPENAI_CUA_TURN_IDLE_MS`: quiet time that ends a turn. Default 60000.
+- `OPENAI_CUA_RESTORE_FOCUS`: `0` disables focus restore.
 - `OPENAI_CUA_MCP_JSON`: path to a cua-repl manifest.
 - `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
 - `OPENAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
@@ -299,7 +354,16 @@ Overrides:
   a `node_repl` (about 13 MB). The engine is released when idle. When needed,
   `SkyComputerUseService` (about 86 MB) is launched by macOS and exits on its
   own.
-- Approval is automatic, so Claude Code's own tool permissions are the gate.
+- With the default `auto` fallback, a client that can't show elicitation gets
+  automatic approval. In that case Claude Code's own tool permissions are the
+  gate. Use `prompt` or `deny-unknown` for a per-app gate in headless use.
+- `stop_app` and a stop from ChatGPT's menu bar are service-wide. They also end
+  that app's sessions for other clients using it at the same moment.
+- A stop made by *another* client lasts until that client's engine exits. A
+  turn end here doesn't clear it.
+- `run_cua_js` scripts can call the bridge's trusted service too. It only
+  offers resolve, stop-app and turn-ended; none of them can answer an
+  approval.
 
 Measured results are in [VERIFICATION.md](VERIFICATION.md). The v0.1 audit is
 in [AUDIT.md](AUDIT.md).

@@ -143,7 +143,7 @@ export function readResource(r) {
 let SCRIPT = ""; // set by buildInstructions when run_cua_js is enabled
 const wrapper = () => `OpenAI's computer-use engine for macOS apps (screenshots, accessibility trees, real input), run in the background: the user's cursor and frontmost app are untouched.
 Workflow: get_app_state(app) first; act by element_index (screenshot x/y when AX fails); read the returned state. After the first full tree of an app, results are diffs against what you last saw ("-" removed, "+" added or changed; unshown elements keep their indices) or "No change". get_app_state mode: full (tree+screenshot), text, diff, screenshot (then the next tree is full). Use batch for fixed action sequences.${SCRIPT} Done = the requested result is visibly present.
-Rules: do UI work only through these tools, never AppleScript, osascript, JXA, System Events or CGEvent unless the user asks. Prefer purpose-built tools, CLIs or APIs. Never open or operate Google Chrome; the only browser allowed is Helium. For web pages in Helium prefer the browser_* tools: background tabs, DOM refs, the user's tabs untouched; browser_cleanup when done.`;
+Rules: do UI work only through these tools, never AppleScript, osascript, JXA, System Events or CGEvent unless the user asks. Prefer purpose-built tools, CLIs or APIs. Never open or operate Google Chrome; the only browser allowed is Helium. For web pages in Helium prefer the browser_* tools: background tabs, DOM refs, the user's tabs untouched; browser_cleanup when done. If a result says the user took over or stopped an app, stop acting on it and hand back; call stop_app when done with an app.`;
 
 // Splits markdown into leaf sections (heading + body, blank lines collapsed).
 function sections(md) {

@@ -51,6 +51,9 @@ export const TOOLS = [
   { name: "perform_secondary_action",
     description: "Invoke an accessibility action an element exposes besides a normal click (e.g. expand a disclosure row, show a menu, increment a control, cancel). Use only an action name listed for that element in the accessibility tree; do not guess names." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, action: { type: "string" } }, ["app", "element_index", "action"]) },
+  { name: "stop_app", control: true,
+    description: "Stop using an app, like the menu-bar \"Stop\" in ChatGPT: ends its computer-use session and releases it. Without app, stops every app used in this session. Call it when you are done with an app or the user asks you to stop.",
+    inputSchema: obj({ app: APP }, []) },
   { name: "start_audio_recording", audio: true,
     description: "Start recording the computer's audio output (system loopback, not the microphone) while other actions continue, e.g. to capture a video's or call's sound. Recording stops by itself after max_duration_ms. Call stop_audio_recording to get the WAV.",
     inputSchema: obj({ max_duration_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Stop automatically after this many milliseconds. Defaults to 60000 (max 300000)" } }, []) },
@@ -92,6 +95,14 @@ const ACTIONS = {
   perform_secondary_action: `await a.performSecondaryAction(${n("element_index")}, A.action);`,
 };
 export const BATCHABLE = TOOLS.filter((t) => ACTIONS[t.name]).map((t) => t.name);
+// Keyboard actions do not depend on element indices, so they survive a
+// refresh-and-retry after the user changed the app.
+const KEYBOARD = new Set(["press_key", "type_text", "paste"]);
+const TAKEOVER = `/The user changed '|still interacting with|-10016|userIntervened/i`;
+// Tools that drive app UI (for the focus guard), and the apps they target.
+export const isUiAction = (name) => !!ACTIONS[name] || name === "batch";
+export const targetApps = (name, args) => name === "batch"
+  ? [...new Set(args.steps.map((s) => s?.args?.app ?? args.app).filter(Boolean))] : [args.app].filter(Boolean);
 const MAX_STEPS = 50;
 const TIMEOUT = { type: "integer", minimum: 1000, maximum: 600000, description: "Timeout in milliseconds (1000-600000). Defaults to the server's call timeout (60000). On timeout the engine and its JavaScript state are discarded" };
 
@@ -120,7 +131,7 @@ export const jsEnabled = () => process.env.OPENAI_CUA_ENABLE_JS === "1";
 const tool = (name) => TOOLS.find((t) => t.name === name && (!t.js || jsEnabled()));
 export const TOOL_NAMES = new Set(TOOLS.filter((t) => tool(t.name)).map((t) => t.name));
 export const isReadOnly = (name) => !!tool(name)?.readOnly;
-export const publicTools = () => TOOLS.filter((t) => tool(t.name)).map(({ readOnly, audio, js, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: !!js } }));
+export const publicTools = () => TOOLS.filter((t) => tool(t.name)).map(({ readOnly, audio, js, control, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: !!js } }));
 
 // Validates args; returns an error string or null.
 export function validate(name, args) {
@@ -182,13 +193,32 @@ export function batchSteps({ app, steps }) {
 // cua.computer behind a Proxy on first use, so patching its methods breaks the
 // API (see VERIFICATION.md). Chrome is refused by validate() and, by resolved
 // bundle id, at app-access approval, which the bridge answers outside the REPL.
+// A display name the engine cannot resolve is retried once by the bundle id
+// that list_apps reports for it.
 const PRELUDE = `
 globalThis.__cb ??= {
   apps: new Map(),
+  ids: new Map(), // name → bundle id, when the name needed a lookup
   async app(name, fresh) {
     let a = fresh ? null : this.apps.get(name);
-    if (!a) { a = await cua.getApp(name); this.apps.set(name, a); }
+    if (!a) {
+      try { a = await cua.getApp(name); }
+      catch (e) {
+        const id = /invalid app|not found|ambiguous|-10010|-10018/i.test(e.message) ? await this.lookup(name) : null;
+        if (!id) throw e;
+        a = await cua.getApp(id);
+        this.ids.set(name, id);
+      }
+      this.apps.set(name, a);
+    }
     return a;
+  },
+  async lookup(name) {
+    const norm = (s) => String(s ?? "").toLowerCase().trim().replace(/\\.app$/, "").replace(/\\s*\\([^)]*\\)$/, "").replace(/\\s+/g, "");
+    const apps = await cua.listApps({ emit: false });
+    let hits = apps.filter((x) => norm(x.displayName) === norm(name));
+    if (hits.length > 1) hits = hits.filter((x) => x.isRunning);
+    return hits.length === 1 && hits[0].id !== name ? hits[0].id : null;
   },
 };`;
 // Bridge captures are always full trees: the engine's own diff baseline is
@@ -252,13 +282,13 @@ if (A.include_audio) {
   return { app, tree, shot, error };
 };
 const emit = async (states) => {
-  nodeRepl.write(${M} + JSON.stringify({ ran, fail, states: states.map(({ shot, ...s }) => ({ ...s, shot: !!shot })) }));
+  nodeRepl.write(${M} + JSON.stringify({ ran, fail, note, states: states.map(({ shot, ...s }) => ({ ...s, shot: !!shot })) }));
   for (const s of states) if (s.shot) await nodeRepl.emitImage(s.shot);
 };\n`;
   if (name === "batch")
     return `{\nconst A = ${JSON.stringify({ screenshot: !!args.screenshot })};
 const STEPS = ${JSON.stringify(opts.steps)};${PRELUDE}
-let ran = 0, fail = null;
+let ran = 0, fail = null, note = null;
 const touched = [];
 for (let i = 0; i < STEPS.length; i++) {
   const { tool, args: A } = STEPS[i];
@@ -275,9 +305,37 @@ ${after}const states = [];
 for (const app of touched) states.push(await after(app));
 await emit(states);
 }`;
+  if (name === "stop_app")
+    return head + `const targets = A.app != null ? [A.app] : [...__cb.apps.keys()];
+const lines = [];
+for (const t of targets) {
+  try {
+    const stop = (app) => nodeRepl.rpc("cuabridge", { type: "stopApp", app });
+    let r;
+    try { r = await stop(__cb.ids?.get(t) ?? t); }
+    catch (e) { const id = /invalid app|not found|ambiguous/i.test(e.message) ? await __cb.lookup(t) : null; if (!id) throw e; r = await stop(id); }
+    lines.push("Stopped " + (r.displayName ?? t) + (r.bundleIdentifier ? " (" + r.bundleIdentifier + ")" : "") + ".");
+  } catch (e) { lines.push("Could not stop " + t + ": " + e.message); }
+  __cb.apps.delete(t);
+}
+nodeRepl.write(${M} + (lines.join("\\n") || "No app sessions to stop."));
+}`;
+  // If the user changed the app under the action: keyboard actions refresh the
+  // state and retry once; others report it (fail) along with the fresh state.
   return head + `const a = await __cb.app(A.app);
-let ran = 0, fail = null;
-${ACTIONS[name]}
+let ran = 0, fail = null, note = null;
+const act = async () => { ${ACTIONS[name]} };
+try { await act(); ran = 1; }
+catch (e) {
+  const msg = String(e?.message ?? e);
+  if (!${TAKEOVER}.test(msg)) throw e;
+  if (${KEYBOARD.has(name)} && !/still interacting with/i.test(msg)) {
+    try { await a.getAXState({ emit: false, disableDiffing: true }); } catch {}
+    await act();
+    ran = 1;
+    note = "The user changed the app during this action; its state was refreshed and the action retried once.";
+  } else fail = { step: 1, tool: ${JSON.stringify(name)}, error: msg };
+}
 ${after}await emit([await after(A.app)]);
 }`;
 }
