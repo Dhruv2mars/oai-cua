@@ -31,11 +31,22 @@ export class Engine {
   // stopped so the action cannot complete later. allowAudio lets this cell's
   // audio-recording approval through; every other cell's is declined.
   run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false } = {}) {
+    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio);
+  }
+
+  // Discard the REPL's JavaScript bindings (cua-repl's js_reset). Resolves
+  // false when no engine is running, i.e. the next cell starts fresh anyway.
+  reset(signal) {
+    if (!this.running) return Promise.resolve(false);
+    return this.#enqueue("js_reset", {}, this.callTimeoutMs, signal, false).then(() => true);
+  }
+
+  #enqueue(tool, args, timeoutMs, signal, allowAudio) {
     this.busy++;
     clearTimeout(this.idleTimer);
     const job = this.queue.then(() => {
       if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
-      return this.#exec(code, timeoutMs, signal, allowAudio);
+      return this.#exec(tool, args, timeoutMs, signal, allowAudio);
     });
     this.queue = job.catch(() => {});
     return job.finally(() => { this.busy--; this.#armIdle(); });
@@ -58,13 +69,13 @@ export class Engine {
     this.#armIdle();
   }
 
-  async #exec(code, timeoutMs, signal, allowAudio) {
+  async #exec(tool, args, timeoutMs, signal, allowAudio) {
     const inst = await this.#ensure();
     if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
     const onAbort = () => this.#retire(inst, "cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
     inst.allowAudio = allowAudio;
-    const r = await this.#request(inst, "tools/call", { name: "js", arguments: { code, timeout_ms: timeoutMs } }, timeoutMs + Math.min(10000, timeoutMs), true)
+    const r = await this.#request(inst, "tools/call", { name: tool, arguments: args }, timeoutMs + Math.min(10000, timeoutMs), true)
       .finally(() => { inst.allowAudio = false; signal?.removeEventListener("abort", onAbort); });
     if (r.error) throw new EngineError(`engine error: ${r.error.message || JSON.stringify(r.error)}`, "ENGINE_RPC");
     return { content: r.result?.content || [], isError: !!r.result?.isError };
@@ -129,7 +140,7 @@ export class Engine {
     writeLine(inst.proc.stdin, { jsonrpc: "2.0", method: "notifications/initialized" });
     // First cell loads the cua runtime and reaches SkyComputerUseService.
     // getState reports service failures in `errors` rather than throwing.
-    const code = "const s = await cua.getState({ emit: false }); if (s?.errors?.length) throw new Error(s.errors.join('; '));";
+    const code = "{ const s = await cua.getState({ emit: false }); if (s?.errors?.length) throw new Error(s.errors.join('; ')); }"; // no top-level bindings
     const r = await this.#request(inst, "tools/call", { name: "js", arguments: { code, timeout_ms: t } }, t + 5000);
     if (r.error || r.result?.isError) {
       const text = r.error?.message || String(r.result.content?.[0]?.text ?? "").slice(0, 500); // the REPL puts the error first

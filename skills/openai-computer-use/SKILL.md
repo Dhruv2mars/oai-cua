@@ -50,9 +50,13 @@ tools. Examples in it that target Google Chrome are illustrative only.
 
 ## 2. The loop: observe, act, verify
 
-1. **Observe.** Call `get_app_state` with the app. It returns a screenshot and
-   a numbered accessibility (AX) tree. You do not need to launch the app first:
-   a closed app is started in the background.
+1. **Observe.** Call `get_app_state` with the app. The first time in a
+   session, it returns a screenshot and the full numbered accessibility (AX)
+   tree. After that it returns only what changed since you last saw the app.
+   Pass `mode: "full"` to get the whole tree and a screenshot again, `"text"`
+   for the tree without a screenshot, or `"screenshot"` for just the image
+   (the next tree after that comes in full). You do not need to launch the app
+   first: a closed app is started in the background.
 2. **Act** on one element:
    - Prefer `element_index` from the latest tree. Use x/y (pixels in the latest
      screenshot) only when the element has no index or AX actions fail.
@@ -62,9 +66,10 @@ tools. Examples in it that target Google Chrome are illustrative only.
      for that element. Do not guess names.
    - `select_text` needs the text exactly as it appears in the tree. Use
      `prefix`/`suffix` when it repeats.
-3. **Read the result.** Actions return the AX state as a diff: only removed,
-   added or changed elements. Indices can change after any action. Call
-   `get_app_state` again before you reuse indices from an older tree, or when
+3. **Read the result.** Actions return the AX state, labelled as a full tree,
+   a diff since your last observation, or "No change". In a diff, `-` lines
+   were removed and `+` lines were added or changed. Elements that are not
+   shown are unchanged and keep their indices. Call `get_app_state` again when
    the diff does not explain what happened.
 4. **Do not loop on nothing.** If an observation shows no change, take a
    different action before you observe again. Do not sleep before observing:
@@ -106,6 +111,11 @@ incomplete, as it is in canvas, game and some web apps.
   Spotlight and Mission Control do not work.
 - Pass `screenshot: true` to an action to see its result in the same call,
   which is useful after coordinate clicks.
+- Use `batch` for a fixed sequence, such as clicking a field, typing and
+  pressing Return. It runs all the steps in one call, stops at the first
+  failure and reports which step failed.
+- Only the key window is visible. To reach another window of the same app,
+  open the app's Window menu and click that window's title.
 
 ## 5. Use only these tools for UI work
 
