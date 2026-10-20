@@ -1,7 +1,7 @@
 {
   "name": "oai-cua",
   "displayName": "OpenAI Computer Use",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Computer-use tools for macOS apps (and Helium tabs), driven by OpenAI's installed computer-use engine. No OpenAI model is called; the ChatGPT app only has to be installed.",
   "author": { "name": "Dhruv2mars", "url": "https://github.com/Dhruv2mars" },
   "repository": "https://github.com/Dhruv2mars/oai-cua",

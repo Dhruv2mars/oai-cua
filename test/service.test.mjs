@@ -155,6 +155,16 @@ describe("record & replay", () => {
   });
 });
 
+test("an idle release is logged as a stop, not an exit", async () => {
+  const sb = sandbox({ OAI_CUA_IDLE_MS: "300" }), s = startShim(sb);
+  await s.init();
+  await s.call("record_status");
+  await sleep(1500);
+  const log = fs.readFileSync(path.join(sb.dir, "state/shim.log"), "utf8");
+  expect(log).toMatch(/native .*: stopping \(idle\)\n.*native .*: stopped\n/);
+  expect(log).not.toMatch(/native .*: exit /);
+});
+
 describe("computer history (opt-in)", () => {
   test("OAI_CUA_COMPUTER_HISTORY=1 exposes status, settings, pause and resume; schema is enforced", async () => {
     const sb = sandbox({ OAI_CUA_COMPUTER_HISTORY: "1", FAKE_HISTORY_STATE: "running" }), s = startShim(sb);

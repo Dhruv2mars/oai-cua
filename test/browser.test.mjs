@@ -94,9 +94,9 @@ describe("browser: tools against fake Helium", () => {
     expect(read).toContain("Body of ");
     expect(read).toContain("call again with offset=8");
     expect(textOf(await call("browser_navigate", { tab, url: "https://example.com/" }))).toContain("not reloading");
-    expect(fake.count("Page.navigate")).toBe(0);
+    expect(fake.count("Page.navigate")).toBe(1); // open_tab's own
     expect(textOf(await call("browser_navigate", { tab, url: "https://other.example/" }))).toContain("URL: https://other.example/");
-    expect(fake.count("Page.navigate")).toBe(1);
+    expect(fake.count("Page.navigate")).toBe(2);
     expect(fake.count("Target.activateTarget") + fake.count("Page.bringToFront")).toBe(0); // never stole focus
   });
 
@@ -119,7 +119,8 @@ describe("browser: tools against fake Helium", () => {
     const r = textOf(await call("browser_click", { tab, ref: "e14" }));
     expect(r).toContain("opened it in the background as t3");
     expect(r).toContain("URL: https://docs.example/");
-    expect(fake.calls.filter((c) => c.method === "Target.createTarget").at(-1).params).toEqual({ url: "https://docs.example/", background: true });
+    expect(fake.calls.filter((c) => c.method === "Target.createTarget").at(-1).params).toEqual({ url: "about:blank", background: true, newWindow: false });
+    expect(fake.calls.filter((c) => c.method === "Page.navigate").at(-1).params).toEqual({ url: "https://docs.example/" });
     expect(fake.calls.filter((c) => c.method === "Input.dispatchMouseEvent" && c.params.type !== "mouseMoved").length).toBe(0);
     expect(activated).toEqual([]);
     fronts.push("com.example.editor", "net.imput.helium");

@@ -130,9 +130,11 @@ API. Arguments are embedded as JSON literals.
   OpenAI's risk level and an "Always allow" choice. It asks once per app per
   session. Always-allowed apps are saved in `approvals.json` in the state dir
   (mode `0600`). Delete an entry to be asked again. Some clients advertise
-  elicitation but answer it instantly with `cancel`, which headless Claude Code
-  does in about 4 ms. For those clients, and for clients without elicitation,
-  the `approval` option (`OAI_CUA_APPROVAL`) decides:
+  elicitation but answer it themselves within milliseconds. Headless Claude
+  Code answers `cancel` in about 4 ms, and Claude Code inside T3 Code answers
+  `decline` in about 2 ms. No person answers that fast, so any answer under
+  250 ms counts as "this client can't ask". For those clients, and for clients
+  without elicitation, the `approval` option (`OAI_CUA_APPROVAL`) decides:
   - `auto` (the default) accepts.
   - `prompt` shows a native macOS dialog.
   - `deny-unknown` declines apps that are not already allowed.
@@ -315,6 +317,13 @@ of these happens:
   this).
 - A call is cancelled, for example because you interrupted Claude.
 - `stop_app` runs. The app is then released without staying blocked.
+
+The service sometimes keeps a stop after its turn has ended, until the
+engine's connection closes. So if an app still reports a stop in a later turn
+than the one where the shim first saw it (from `stop_app`, or an earlier
+error), the shim starts a fresh engine and retries the call once. A stop first
+seen in the current turn, such as one you just made from the menu bar, is
+honoured until that turn ends.
 
 At turn end, the shim sends the service's turn-ended request through a small
 trusted `node_repl` service of its own (`src/bridge-service.mjs`). That

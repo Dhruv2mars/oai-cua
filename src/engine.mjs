@@ -155,7 +155,7 @@ export class Engine {
     const init = await this.#request(inst, "initialize", {
       protocolVersion: PROTOCOL,
       capabilities: { elicitation: {} },
-      clientInfo: { name: "oai-cua", version: "0.2.0" },
+      clientInfo: { name: "oai-cua", version: "0.2.1" },
     }, t);
     if (init.error || typeof init.result?.protocolVersion !== "string" || !init.result.capabilities?.tools)
       throw new EngineError(`engine rejected initialize: ${JSON.stringify(init.error || init.result).slice(0, 300)}`, "ENGINE_START");
@@ -263,6 +263,14 @@ export class Engine {
     const bad = results.map((r) => r.status === "rejected" ? r.reason.message : r.value.error?.message || (r.value.result?.isError && r.value.result.content?.[0]?.text)).filter(Boolean);
     this.log(`engine#${inst.id} turn ${turn} ended${bad.length ? ` (${bad.join("; ").slice(0, 300)})` : ""}`);
     return !bad.length;
+  }
+
+  // Replaces the engine after the cells queued so far, without cancelling any
+  // of them; the next cell starts a fresh one.
+  recycle(why = "recycle") {
+    const job = this.queue.then(() => (this.cur ? this.#retire(this.cur, why) : undefined));
+    this.queue = job.catch(() => {});
+    return job;
   }
 
   // Stops the current engine; resolves once its whole process group is gone.

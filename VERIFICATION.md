@@ -736,3 +736,21 @@ in-process units. They cover:
   unit-tested through an injected dialog.
 - **The interactive Claude Code elicitation UI.** Not exercised. Headless
   behaviour was measured, as above.
+
+---
+
+# 0.2.1: acceptance-test fixes (2026-10-20)
+
+A full acceptance run of the installed 0.2.0 plugin in T3 Code (37 tools,
+separate thread) found five bugs. Each fix has a regression test that fails
+without it (checked by reverting `src/` and rerunning).
+
+| Bug | Cause | Fix | Evidence |
+|---|---|---|---|
+| B1: every app declined in T3 Code, with no prompt | T3's Claude Code answers elicitation with `decline` in ~2–36 ms; only a fast `cancel` counted as "client can't ask" | Any `decline` or `cancel` under 250 ms uses the `approval` fallback | Test "an instant decline … falls back to the policy". Live: `client answered the approval prompt with decline in 2ms; using the fallback policy` → `com.apple.calculator … accept via policy auto` |
+| B2: an app stays "explicitly stopped by the user" after `stop_app` until the engine exits | The service sometimes keeps a stop past `TurnEnded` | An app still stopped in a later turn than the stop was first seen in gets a fresh engine (`engine.recycle`, queued after pending cells) and one retry; a stop first seen in the current turn is honoured | Tests "a stop that outlives its turn…" and "a user stop first seen in this turn…" (fake `FAKE_STICKY_STOP`, `FAKE_USER_STOP`). Not reproduced live in 6 sequences (plain, after declines, audio decline, native client up, 12 consecutive stop/reuse turns, the acceptance run's exact order); in all of them the stop cleared at turn end |
+| B3: errors and stale output resent as "first-use docs"; tree printed twice | Everything ahead of a cell's start marker counted as docs, including the REPL's error and late output from an earlier cell | Only text from a `# Computer Use` heading on is docs; text that contains (or is contained in) docs already seen is not resent | Tests "an error ahead of the start marker…" and "FirstUse: docs once…". Live: an `Invalid app` error, then the next `get_app_state` had no docs block |
+| B4: `browser_open_tab` returned `(empty page)` | A new tab is a finished `about:blank` until the URL commits, so the load wait returned at once. New-tab links had the same path | Tabs (and new-tab links) open blank, then `Page.navigate`, then wait for that load | Fake CDP now models the late commit; 2 tests fail without the fix. Live, throwaway Helium (temp profile, `OAI_CUA_HELIUM_CDP=9333`): `Opened t1 … Title: Example Domain` in 546 ms |
+| B5: `native …: exit 1` logged on every idle release | The launcher reports the client's SIGTERM as exit 1 | After `stop()`, the exit is logged as `stopped` | Test "an idle release is logged as a stop" |
+
+`bun run check`: 92 pass, 0 fail.

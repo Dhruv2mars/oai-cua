@@ -645,13 +645,27 @@ export class HeliumBrowser {
     return [`${this.label}: ${pages.length} tab(s)`, ...lines];
   }
 
-  async $open_tab({ url = "about:blank", new_window = false }) {
-    const { targetId } = await this.cdp.send("Target.createTarget", { url, background: true, newWindow: new_window });
+  // A background tab of ours, loaded. Created blank and then navigated, so
+  // the wait is for this URL's document, not the initial about:blank one
+  // that is already "complete".
+  async #openOwned(url, newWindow = false) {
+    const { targetId } = await this.cdp.send("Target.createTarget", { url: "about:blank", background: true, newWindow });
     const t = this.#tab(targetId);
     t.owned = true;
     await this.#attach(t);
+    if (url !== "about:blank") {
+      t.loading = true;
+      const r = await this.#send(t, "Page.navigate", { url });
+      if (r.errorText) { t.loading = false; throw new CdpError(`Opened ${t.alias}, but navigation to ${url} failed: ${r.errorText}`); }
+      await sleep(this.settleMs);
+    }
     await this.#loaded(t, 20000);
-    return [`Opened ${t.alias} in the background.`, await this.#snapshot(t, { full: true })];
+    return t;
+  }
+
+  async $open_tab({ url = "about:blank", new_window = false }) {
+    const t = await this.#openOwned(url, new_window);
+    return [`Opened ${t.alias} in the background.`, t.dialog ? this.#dialogNotice(t) : await this.#snapshot(t, { full: true })];
   }
 
   async $claim_tab({ tab }) {
@@ -747,11 +761,7 @@ export class HeliumBrowser {
           return a && target && !["_self", "_parent", "_top"].includes(target) && /^(https?|file):/.test(a.href) ? a.href : null;
         }`).catch(() => null);
         if (href) {
-          const { targetId } = await this.cdp.send("Target.createTarget", { url: href, background: true });
-          const nt = this.#tab(targetId);
-          nt.owned = true;
-          await this.#attach(nt);
-          await this.#loaded(nt, 20000);
+          const nt = await this.#openOwned(href);
           return [`${ref} is a link that opens a new tab; opened it in the background as ${nt.alias} (yours, cleaned up later) instead of clicking.`, await this.#snapshot(nt, { full: true })];
         }
       }

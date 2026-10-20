@@ -1,6 +1,6 @@
 {
   "name": "oai-cua",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Use OpenAI's installed computer-use engine from Claude Code on macOS, without the ChatGPT app running and without calling any OpenAI model.",
   "type": "module",

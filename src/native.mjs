@@ -82,7 +82,8 @@ export class NativeServer {
     p.stdout.on("data", makeLineReader((m) => this.#onMessage(m)));
     p.stdin.on("error", () => {});
     const exited = new Promise((_, rej) => p.on("exit", (code, sig) => {
-      this.log(`native ${this.sub.join(" ")}: exit ${code ?? sig}${stderr ? `: ${stderr.trim()}` : ""}`);
+      // After stop() the launcher reports the client's SIGTERM as exit 1; that is expected.
+      this.log(this.#p === p ? `native ${this.sub.join(" ")}: exit ${code ?? sig}${stderr ? `: ${stderr.trim()}` : ""}` : `native ${this.sub.join(" ")}: stopped`);
       if (this.#p === p) { this.#p = null; this.#ready = null; }
       const err = new NativeError(`native ${this.sub[0]} server exited (${code ?? sig})${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`, "NATIVE_EXIT");
       for (const w of this.#pending.values()) w.reject(err);

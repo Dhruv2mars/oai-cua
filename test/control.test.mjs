@@ -104,6 +104,16 @@ describe("per-app approval", () => {
     expect(elicitations(s).length).toBe(1); // not asked again once detected
   });
 
+  test("an instant decline (T3 Code's Claude Code) also falls back to the policy", async () => {
+    const sb = sandbox({ FAKE_ELICIT: "1" }), s = startShim(sb);
+    s.onRequest = () => ({ action: "decline" }); // answered by the client within milliseconds
+    await s.init({ elicitation: {} });
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect((await s.call("get_app_state", { app: "Notes" })).isError).toBeUndefined();
+    expect(elicitations(s).length).toBe(1);
+    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toMatch(/answered the approval prompt with decline in \d+ms/);
+  });
+
   test("deny-unknown declines unapproved apps but honours always-allowed ones; Chrome never asks", async () => {
     const sb = sandbox({ FAKE_ELICIT: "1", OAI_CUA_APPROVAL: "deny-unknown" });
     let s = startShim(sb);
@@ -169,6 +179,32 @@ describe("stop, takeover and turns", () => {
     await s.call("get_app_state", { app: "TextEdit" });
     await s.call("get_app_state", { app: "Notes" });
     expect(textOf(await s.call("stop_app", {}))).toBe("Stopped TextEdit (com.example.TextEdit).\nStopped Notes (com.example.Notes).");
+  });
+
+  test("a stop that outlives its turn gets a fresh engine and one retry", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" }); // ends turn 1
+    const r = await s.call("get_app_state", { app: "TextEdit" });
+    expect(r.isError).toBeUndefined();
+    expect(textOf(r)).toContain("Full accessibility tree of TextEdit");
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2); // one engine restart
+    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toContain("TextEdit still stopped from an earlier turn; restarting the engine");
+  });
+
+  test("a user stop first seen in this turn is honoured; after the turn ends it is cleared", async () => {
+    const sb = sandbox({ FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
+    await s.init();
+    for (let i = 0; i < 2; i++) {
+      const r = await s.call("get_app_state", { app: "TextEdit" });
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toContain("The user stopped Computer Use for this app");
+    }
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart within the turn
+    await sleep(500); // the turn ends
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
   });
 
   test("the turn ends after Claude goes quiet", async () => {

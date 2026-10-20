@@ -4,7 +4,6 @@
 // ChatGPT.app and ~/.codex, never vendored, and handed to Claude as MCP server
 // instructions, resources, prompts and once-per-session first-use docs.
 // Everything in this file's string literals is our own text.
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { CHATGPT_APP, CODEX_HOME, findRuntime, versionDirs } from "./lib.mjs";
@@ -177,28 +176,33 @@ Confirm with the user right before deleting data, sending messages/posts/forms, 
 // The persistent REPL warns when a cell redeclares a top-level binding; that
 // is not documentation.
 const REPL_NOISE = /^Warning: \S+ was declared with \w+;.*$\n?/gm;
+// The docs open with this heading. Other text ahead of a cell's start marker
+// (an error, or late output of an earlier cell) is not documentation.
+const DOCS_HEAD = /#{1,3} Computer Use\b/; // may follow other output on the same line
 
 // The engine prints its core docs + confirmation policy once per REPL session,
 // before a cell's own output. We pass each distinct text through once per MCP
 // session, prefixed with our tool mapping.
 export class FirstUse {
   constructor(docs, toolNames) {
-    Object.assign(this, { docs, toolNames, delivered: new Set(), pending: [], latest: null });
+    Object.assign(this, { docs, toolNames, known: [], pending: [], latest: null });
   }
   add(texts) {
     for (const t of texts) {
-      const text = String(t ?? "").replace(REPL_NOISE, "").trim();
-      if (!text) continue;
-      const h = crypto.createHash("sha256").update(text).digest("hex");
+      const raw = String(t ?? "").replace(REPL_NOISE, "");
+      const at = raw.search(DOCS_HEAD);
+      if (at < 0) continue;
+      const text = raw.slice(at).trim();
+      if (this.known.some((k) => text.includes(k) || k.includes(text))) continue; // already seen, maybe with output glued on
+      this.known.push(text);
+      this.pending.push(text);
       this.latest = text;
-      if (!this.delivered.has(h) && !this.pending.some((p) => p.h === h)) this.pending.push({ h, text });
     }
   }
   // Content item for the next successful tool result, or null.
   take() {
     if (!this.pending.length) return null;
-    const body = this.pending.map((p) => p.text).join("\n\n");
-    for (const p of this.pending) this.delivered.add(p.h);
+    const body = this.pending.join("\n\n");
     this.pending = [];
     return { type: "text", text: `[First-use documentation from OpenAI's installed computer-use engine, shown once per session; re-read anytime at ${FIRST_USE_URI}.]\n${adapterNote(this.toolNames)}\n\n${body}` };
   }

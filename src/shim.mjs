@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { Approver, promptText } from "./approval.mjs";
 import { BROWSER_TOOLS, HeliumBrowser, discoverEndpoints, isBrowserTool, verifyEndpoint } from "./browser.mjs";
-import { explain } from "./diagnose.mjs";
+import { diagnose, explain } from "./diagnose.mjs";
 import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
@@ -16,7 +16,7 @@ import { Observations, limitOutput } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 // OpenAI's guidance, read once at startup from the installed app (see guidance.mjs).
 const DOCS = discover();
@@ -41,6 +41,22 @@ async function endTurn(why) {
   turn.used = false;
   log(`turn ${ended.turn} ends: ${why}`);
   try { await engine.endTurn(ended); } catch (e) { log(`turn end failed: ${e.message}`); }
+}
+
+// Stops. A stop (stop_app, the user's, or a declined prompt) lasts for the
+// turn it happened in; the service clears it when that turn ends. It sometimes
+// keeps it until the engine's connection closes instead, so an app that still
+// reports a stop in a later turn than the one it was seen in gets a fresh
+// engine and one retry. A stop first seen in the current turn is honoured.
+const stops = new Map(); // app → turn number the stop was seen in
+const usedApps = new Set(); // what stop_app without an app stops
+const appKey = (a) => String(a).trim().toLowerCase();
+const staleStop = (apps) => apps.every((a) => stops.get(appKey(a)) < turn.n);
+function stopFailure(r) {
+  let msg = "";
+  if (r.isError) msg = r.content[0]?.text;
+  else try { msg = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail?.error; } catch {}
+  return diagnose(msg)?.kind === "user-stopped";
 }
 
 const engine = new Engine({
@@ -140,6 +156,7 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
+      for (const a of args.app != null ? [appKey(args.app)] : usedApps) stops.set(a, turn.n);
       await endTurn("stop_app");
     }
     return r;
@@ -165,11 +182,23 @@ async function execute(name, args, signal) {
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
   const p = plan(name, args);
   const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, p);
-  for (let attempt = 0; ; attempt++) {
+  const apps = targetApps(name, args);
+  for (let attempt = 0, recycled = false; ; attempt++) {
     try {
       const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
-      const r = await (isUiAction(name) ? focus.around(targetApps(name, args), run) : run());
+      const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
+      if (apps.length && name !== "stop_app" && name !== "run_cua_js") {
+        for (const a of apps) usedApps.add(appKey(a));
+        if (!stopFailure(r)) for (const a of apps) stops.delete(appKey(a));
+        else if (!recycled && staleStop(apps)) { // outlived its turn: only a new engine clears it
+          log(`${apps.join(", ")} still stopped from an earlier turn; restarting the engine`);
+          recycled = true;
+          observations.forget();
+          await engine.recycle("stale stop");
+          continue;
+        } else for (const a of apps) if (!stops.has(appKey(a))) stops.set(appKey(a), turn.n);
+      }
       if (name === "run_cua_js") { // the script's own output and errors, as the REPL returned them
         if (!r.isError) return withDocs(extractOutput(r.content, MARK) ?? []);
         const out = extractOutput(r.content.slice(1), MARK) ?? [];

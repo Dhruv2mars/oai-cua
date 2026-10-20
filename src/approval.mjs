@@ -9,8 +9,9 @@
 //     auto (default)  accept, as before this feature existed
 //     prompt          ask with a native macOS dialog
 //     deny-unknown    decline apps that are not already approved
-// Clients that advertise elicitation but cannot show it (headless Claude Code
-// answers `cancel` within milliseconds) are detected and use the fallback.
+// Clients that advertise elicitation but cannot show it answer within
+// milliseconds (headless Claude Code with `cancel`, T3 Code's Claude Code with
+// `decline`); no person answers that fast, so they use the fallback.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +19,7 @@ import { STATE_DIR } from "./lib.mjs";
 import { BLOCKED_APP } from "./tools.mjs";
 
 export const POLICIES = ["auto", "prompt", "deny-unknown"];
-const AUTO_CANCEL_MS = 250; // no human dismisses a prompt this fast
+const AUTO_ANSWER_MS = 250; // no human answers a prompt this fast
 
 // Normalizes the engine's elicitation request.
 export function parseRequest(params = {}) {
@@ -87,9 +88,10 @@ export class Approver {
       const t = this.now();
       try {
         const res = await this.elicit(r, signal);
-        if (res?.action === "cancel" && this.now() - t < AUTO_CANCEL_MS) {
+        const ms = this.now() - t;
+        if ((res?.action === "cancel" || res?.action === "decline") && ms < AUTO_ANSWER_MS) {
           this.clientCannotAsk = true; // answered by software, not a person
-          this.log("client cancelled the approval prompt instantly; using the fallback policy from now on");
+          this.log(`client answered the approval prompt with ${res.action} in ${ms}ms; using the fallback policy from now on`);
         } else if (res?.action === "accept" || res?.action === "decline" || res?.action === "cancel")
           return { action: res.action, always: res.content?.always === true, via: "elicitation" };
       } catch (e) {
