@@ -16,4 +16,4 @@
 - [x] README tool list + env vars
 - [x] VERIFICATION.md dated section with evidence
 - [x] Live probe of worktree shim (read-only status calls)
-- [ ] bun run check green; commit, PR, link, rebase, squash-merge
+- [x] bun run check green; commit, PR #4, link, rebase, squash-merge
