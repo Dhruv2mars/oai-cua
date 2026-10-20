@@ -5,7 +5,9 @@
 // FAKE_SPLIT (byte-by-byte stdout), FAKE_CRASH_ONCE (file path),
 // FAKE_SLOW_EXIT_MS, FAKE_ELICIT, FAKE_HANG, FAKE_CELL_DELAY_MS,
 // FAKE_IGNORE_TERM (ignores SIGTERM/EOF and spawns a grandchild),
-// FAKE_AUDIO_ELICIT_ON_CLICK (a click also asks to record audio), FAKE_WAV_BYTES.
+// FAKE_AUDIO_ELICIT_ON_CLICK (a click also asks to record audio), FAKE_WAV_BYTES,
+// FAKE_DOCS (first-use docs text; "" disables), FAKE_REPL_RESET (file path:
+// the REPL restarts once before the first bridge cell, printing FAKE_RESET_DOCS).
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 
@@ -90,6 +92,10 @@ globalThis.cua = {
 };
 const AsyncFunction = (async () => {}).constructor;
 
+// Like cua-repl, a fresh REPL prints first-use docs ahead of a cell's output.
+let fresh = true, seen = 0;
+const DOCS = E.FAKE_DOCS ?? "## Computer Use\nFAKE FIRST-USE DOCS";
+
 let initialized = false;
 async function handle(m) {
   if (m.method === "tools/call" && !initialized) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32002, message: "not initialized" } });
@@ -106,9 +112,14 @@ async function handle(m) {
     if (E.FAKE_HANG && code.includes("__cb")) return; // never answers
     if (code.includes("__cb")) await sleep(Number(E.FAKE_CELL_DELAY_MS || 0));
     out = [];
+    let docs = fresh ? DOCS : "";
+    fresh = false;
+    if (E.FAKE_REPL_RESET && code.includes("__cb") && !fs.existsSync(E.FAKE_REPL_RESET)) { fs.writeFileSync(E.FAKE_REPL_RESET, ""); docs = E.FAKE_RESET_DOCS ?? DOCS; }
+    const boot = docs ? [{ type: "text", text: docs }] : [];
+    if (!fresh && code.includes("__cb") && seen++) boot.push({ type: "text", text: "Warning: A was declared with const; use let for reassignable variables.\n" }); // real REPL redeclaration noise
     try {
       await new AsyncFunction(code)();
-      send({ jsonrpc: "2.0", id: m.id, result: { content: out } });
+      send({ jsonrpc: "2.0", id: m.id, result: { content: [...boot, ...out] } });
     } catch (e) {
       send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: e.message }, ...out], isError: true } });
     }

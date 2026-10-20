@@ -1,8 +1,9 @@
 // Claude-facing tool schemas and their translation into cua-repl JavaScript.
 // Arguments are embedded as JSON literals, never spliced as code.
 
-const APP = { type: "string", description: "App name, full app path, or unambiguous bundle identifier" };
-const INDEX = { type: "integer", description: "Element index from the accessibility tree returned by get_app_state" };
+const APP = { type: "string", description: "App display name, full app path, or bundle identifier (e.g. \"TextEdit\", \"com.apple.TextEdit\"). If a display name fails, retry with the bundle id from list_apps" };
+const INDEX = { type: "integer", description: "Element index from the latest accessibility tree (get_app_state or an action's diff). Indices go stale after the UI changes" };
+const AFTER = " Returns the updated accessibility state, as a diff from the previous state when possible (only removed, added or changed elements); call get_app_state (or pass screenshot) to see the result.";
 const obj = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
 const SHOT = { type: "boolean", description: "Also return a screenshot taken after the action, so the result (e.g. of a coordinate click) can be checked in the same call. Defaults to false" };
 const HOLD = (what) => ({ type: "integer", minimum: 0, maximum: 30000, description: `Milliseconds to hold ${what} before releasing it (0-30000)` });
@@ -11,43 +12,43 @@ const action = (props, required) => obj({ ...props, screenshot: SHOT }, required
 
 export const TOOLS = [
   { name: "list_apps", readOnly: true,
-    description: "List the apps on this Mac: currently running apps plus apps used in the last 14 days, with window titles.",
+    description: "List the apps on this Mac (running apps plus recently used ones) with their bundle ids. Use it when the task does not name an app, or to get a bundle id after a display name failed; do not call it just to resolve an app you can name, call get_app_state with the name instead.",
     inputSchema: obj({}, []) },
   { name: "get_app_state", readOnly: true,
-    description: "Start an app use session if needed (launching the app in the background if it is not running), then return a screenshot and numbered accessibility tree of the app's key window. Call this before interacting with an app and whenever you need fresh element indices.",
+    description: "Return a screenshot plus the full numbered accessibility tree of an app's key window, starting an app session if needed. No need to open apps first: a non-running app is launched in the background. Call it before acting on an app and whenever indices may be stale or an action did not behave as expected. Prefer the accessibility text; use the screenshot when the tree is incomplete. The engine waits for the UI to settle before capturing, so do not sleep first.",
     inputSchema: obj({ app: APP }, ["app"]) },
   { name: "click",
-    description: "Click an element by index, or by x/y in screenshot pixel coordinates. Can hold modifier keys (shift-click, ⌘-click) and hold the mouse button down (long press). Does not move the user's cursor or bring the app to the front.",
+    description: "Click an element by element_index (preferred), or by x/y in the latest screenshot's pixel coordinates when accessibility actions fail. Can hold modifier keys (shift-click, ⌘-click) and hold the mouse button down (long press). Does not move the user's cursor or bring the app to the front." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, x: { type: "number", description: "X in screenshot pixels" }, y: { type: "number", description: "Y in screenshot pixels" },
       click_count: { type: "integer", description: "Number of clicks. Defaults to 1" }, mouse_button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left" },
       modifiers: { type: "string", description: `Modifier chord held across the whole click, joined with +, e.g. "shift", "super", "super+shift", "cmd+alt". ${CHORD}` },
       hold_ms: HOLD("each mouse-down") }, ["app"]) },
   { name: "type_text",
-    description: "Type literal text into the app's focused element. Single-line printable ASCII is typed as keystrokes. Text containing a newline, carriage return or tab, or any non-ASCII character (accents, CJK, emoji), is inserted with one paste instead, so newlines never become Return key presses (which could submit a form or send a message). The engine restores the clipboard. To press Return or Tab as keys, use press_key.",
+    description: "Type literal text into the app's focused element (focus it first, e.g. with click). Reaches only the target app, so it cannot trigger global shortcuts. Single-line printable ASCII is typed as keystrokes. Text containing a newline, carriage return or tab, or any non-ASCII character (accents, CJK, emoji), is inserted with one paste instead, so newlines never become Return key presses (which could submit a form or send a message). The engine restores the clipboard. To press Return or Tab as keys, use press_key." + AFTER,
     inputSchema: action({ app: APP, text: { type: "string", description: "Literal text to type" } }, ["app", "text"]) },
   { name: "paste",
-    description: "Paste content into the app's focused element in one step, as plain text, or as rich text rendered from Markdown or HTML (headings, bold, links, lists) for apps that accept rich text. The engine restores the user's clipboard afterwards. On macOS the paste goes to the current focus: click or select the target first (there is no element_index).",
+    description: "Paste content into the app's focused element in one step, as plain text, or as rich text rendered from Markdown or HTML (headings, bold, links, lists) for apps that accept rich text. The engine restores the user's clipboard afterwards. On macOS the paste goes to the current focus: click or select the target first (there is no element_index)." + AFTER,
     inputSchema: action({ app: APP, text: { type: "string", description: "Content to paste" },
       format: { type: "string", enum: ["text", "md", "html"], description: "text (default), md (Markdown) or html" } }, ["app", "text"]) },
   { name: "press_key",
-    description: `Press a key or key combination, e.g. "Return", "Tab", "Escape", "super+c", "cmd+shift+z", "super+Down", "Up". ${CHORD}. A chord needs at least one non-modifier key.`,
+    description: `Press a key or key combination, e.g. "Return", "Tab", "Escape", "super+c", "cmd+shift+z", "super+Down", "Up", "KP_0" (numpad 0). ${CHORD}. A chord needs at least one non-modifier key. Sent to the target app only, so global (system-wide) shortcuts do not work.` + AFTER,
     inputSchema: action({ app: APP, key: { type: "string", description: "Key or key combination" }, hold_ms: HOLD("the key") }, ["app", "key"]) },
   { name: "scroll",
-    description: "Scroll an element (by index) or a point (x/y) in a direction by a number of pages.",
+    description: "Scroll an element (by element_index, preferred) or a point (x/y in screenshot pixels) in a direction by a number of pages." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, x: { type: "number" }, y: { type: "number" },
       direction: { type: "string", enum: ["up", "down", "left", "right"] }, pages: { type: "number", description: "Fractional pages allowed. Defaults to 1" } }, ["app", "direction"]) },
   { name: "drag",
-    description: "Drag from one point to another in screenshot pixel coordinates.",
+    description: "Drag from one point to another in the latest screenshot's pixel coordinates." + AFTER,
     inputSchema: action({ app: APP, from_x: { type: "number" }, from_y: { type: "number" }, to_x: { type: "number" }, to_y: { type: "number" } }, ["app", "from_x", "from_y", "to_x", "to_y"]) },
   { name: "set_value",
-    description: "Set the value of a settable accessibility element (text fields, sliders, checkboxes). Replaces the whole value.",
+    description: "Set the value of a settable accessibility element (text fields, sliders, checkboxes), replacing the whole value." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, value: { type: "string" } }, ["app", "element_index", "value"]) },
   { name: "select_text",
-    description: "Select text inside a text element, or place the cursor before/after it. Give the text exactly as shown in the accessibility tree; use prefix/suffix to disambiguate repeats.",
+    description: "Select matching text inside an editable text element, or place the cursor before/after it. Give the text exactly as shown in the accessibility tree; use prefix/suffix to disambiguate repeated matches." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, text: { type: "string" }, prefix: { type: "string" }, suffix: { type: "string" },
       selection: { type: "string", enum: ["text", "cursor_before", "cursor_after"], description: "Defaults to text" } }, ["app", "element_index", "text"]) },
   { name: "perform_secondary_action",
-    description: "Invoke a secondary accessibility action listed for an element (e.g. Raise, Expand, Scroll Down).",
+    description: "Invoke an accessibility action an element exposes besides a normal click (e.g. expand a disclosure row, show a menu, increment a control, cancel). Use only an action name listed for that element in the accessibility tree; do not guess names." + AFTER,
     inputSchema: action({ app: APP, element_index: INDEX, action: { type: "string" } }, ["app", "element_index", "action"]) },
   { name: "start_audio_recording", audio: true,
     description: "Start recording the computer's audio output (system loopback, not the microphone) while other actions continue, e.g. to capture a video's or call's sound. Recording stops by itself after max_duration_ms. Call stop_audio_recording to get the WAV.",

@@ -3,8 +3,10 @@
 // changing any configuration, then:
 //   1. registers the shim with Claude Code (user scope of $CLAUDE_CONFIG_DIR);
 //   2. denies Claude's built-in "computer-use" server so GUI work routes here;
-//   3. removes the legacy v0.1 Codex worker registration and its processes.
-// Flags: --keep-native (skip step 2), --skip-live (skip the live preflight).
+//   3. removes the legacy v0.1 Codex worker registration and its processes;
+//   4. links the repo's Claude Code skill into $CLAUDE_CONFIG_DIR/skills.
+// Flags: --keep-native (skip step 2), --skip-live (skip the live preflight),
+// --skip-skill (skip step 4).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +19,9 @@ const SHIM = path.join(HERE, "src/shim.mjs");
 const NAME = "openai-computer-use";
 const LEGACY = "openai-cua-worker";
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || os.homedir();
-const SETTINGS = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "settings.json");
+const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+const SETTINGS = path.join(CLAUDE_HOME, "settings.json");
+const SKILL = "openai-computer-use";
 const PERSIST = ["CODEX_HOME", "OPENAI_CUA_APP", "OPENAI_CUA_MCP_JSON", "OPENAI_CUA_IDLE_MS", "OPENAI_CUA_CALL_TIMEOUT_MS", "OPENAI_CUA_STATE_DIR"];
 const flag = (f) => process.argv.includes(f);
 const ok = (m) => console.log("✓ " + m);
@@ -112,5 +116,26 @@ const legacyPids = ps.filter((l) => l.includes(path.join(HERE, "src/worker.mjs")
 for (const pid of legacyPids) try { process.kill(pid, "SIGTERM"); } catch {}
 for (const f of ["worker.sock", "worker.pid", "tools.json"]) fs.rmSync(path.join(STATE_DIR, f), { force: true });
 if (legacyPids.length) ok(`stopped ${legacyPids.length} legacy worker process(es)`);
+
+// 4. Skill: a symlink, so it follows the repo like the registered shim does.
+// Anything already at the target is backed up first, then replaced.
+if (!flag("--skip-skill")) {
+  const src = path.join(HERE, "skills", SKILL);
+  const dest = path.join(CLAUDE_HOME, "skills", SKILL);
+  const cur = fs.lstatSync(dest, { throwIfNoEntry: false });
+  if (!fs.existsSync(path.join(src, "SKILL.md"))) console.error(`! skill source missing: ${src}`);
+  else if (cur?.isSymbolicLink() && fs.readlinkSync(dest) === src) ok(`skill ${SKILL} already linked`);
+  else {
+    if (cur) {
+      const saved = path.join(BACKUPS, `skills-${SKILL}.${stamp}`);
+      if (cur.isSymbolicLink()) fs.writeFileSync(saved, `symlink -> ${fs.readlinkSync(dest)}\n`, { mode: 0o600 });
+      else fs.cpSync(dest, saved, { recursive: true });
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.symlinkSync(src, dest);
+    ok(`skill ${SKILL} linked at ${dest}${cur ? " (previous one backed up)" : ""}`);
+  }
+}
 
 console.log(`\nDone. New Claude Code sessions get the "${NAME}" tools; the ChatGPT app does not need to be running.`);
