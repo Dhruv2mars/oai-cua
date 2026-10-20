@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Approver, parseRequest } from "../src/approval.mjs";
+import { handleRpc } from "../src/bridge-service.mjs";
 import { diagnose, explain } from "../src/diagnose.mjs";
 import { FocusGuard, isApp } from "../src/focus.mjs";
 
@@ -26,7 +27,7 @@ function sandbox(env = {}) {
   return {
     dir, log, state: path.join(dir, "state"),
     env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OAI_CUA_APP: path.join(dir, "ChatGPT.app"), OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
-      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", ...env },
+      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", CLAUDE_CODE_ENTRYPOINT: "cli", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -104,6 +105,25 @@ describe("per-app approval", () => {
     expect(elicitations(s).length).toBe(1); // not asked again once detected
   });
 
+  test("an instant decline under an Agent SDK host (T3 Code) also falls back to the policy", async () => {
+    const sb = sandbox({ FAKE_ELICIT: "1", CLAUDE_CODE_ENTRYPOINT: "sdk-ts" }), s = startShim(sb);
+    s.onRequest = () => ({ action: "decline" }); // answered by the client within milliseconds
+    await s.init({ elicitation: {} });
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect((await s.call("get_app_state", { app: "Notes" })).isError).toBeUndefined();
+    expect(elicitations(s).length).toBe(1);
+    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toMatch(/answered the approval prompt with decline in \d+ms/);
+  });
+
+  test("an instant decline from the interactive CLI (e.g. an Elicitation hook) stays a refusal", async () => {
+    const sb = sandbox({ FAKE_ELICIT: "1", CLAUDE_CODE_ENTRYPOINT: "cli" }), s = startShim(sb);
+    s.onRequest = () => ({ action: "decline" });
+    await s.init({ elicitation: {} });
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user declined access");
+    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user declined access");
+    expect(elicitations(s).length).toBe(2); // still asked every time
+  });
+
   test("deny-unknown declines unapproved apps but honours always-allowed ones; Chrome never asks", async () => {
     const sb = sandbox({ FAKE_ELICIT: "1", OAI_CUA_APPROVAL: "deny-unknown" });
     let s = startShim(sb);
@@ -145,7 +165,7 @@ describe("per-app approval", () => {
 });
 
 describe("stop, takeover and turns", () => {
-  test("every cell carries this session's turn; stop_app stops the app and ends the turn", async () => {
+  test("every cell carries this session's turn; stop_app stops the app, ends the turn and replaces the engine", async () => {
     const sb = sandbox(), s = startShim(sb);
     await s.init();
     expect(textOf(await s.call("stop_app", {}))).toBe("No app sessions to stop."); // engine not started for this
@@ -156,11 +176,10 @@ describe("stop, takeover and turns", () => {
     const ev = sb.events();
     expect(toolTurns(sb)).toEqual(["1", "1", "2"]);
     const thread = ev.find((e) => e.ev === "cell" && e.turn).turn.thread_id;
-    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([
-      { type: "stopApp", app: "TextEdit" },
-      { type: "turnEnded", threadID: thread, turnID: "1" },
-    ]);
+    // never the service's TurnEnded: it would block every other client
+    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "stopApp", app: "TextEdit" }]);
     expect(ev.find((e) => e.ev === "turn_ended").args).toEqual({ hook_event_name: "Stop", session_id: thread, turn_id: "1" });
+    expect(new Set(ev.map((e) => e.pid)).size).toBe(2); // list_apps ran on a fresh engine
   });
 
   test("stop_app without app stops every app used this session", async () => {
@@ -171,12 +190,59 @@ describe("stop, takeover and turns", () => {
     expect(textOf(await s.call("stop_app", {}))).toBe("Stopped TextEdit (com.example.TextEdit).\nStopped Notes (com.example.Notes).");
   });
 
+  test("a stop that the service keeps is gone after stop_app: the next call runs on a fresh engine", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" });
+    expect((await s.call("get_app_state", { app: "com.example.TextEdit" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+  });
+
+  test("a user stop is honoured for the rest of the turn and cleared when it ends; nothing is retried", async () => {
+    const sb = sandbox({ FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
+    await s.init();
+    for (let i = 0; i < 2; i++) expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).toContain("The user stopped Computer Use");
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart within the turn
+    await sleep(500); // the turn ends
+    expect((await s.call("press_key", { app: "TextEdit", key: "a" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1); // only the allowed one ran
+  });
+
+  test("a turn without a user stop keeps its engine", async () => {
+    const sb = sandbox({ OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await sleep(500);
+    await s.call("get_app_state", { app: "TextEdit" });
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
+  test("an audio recording keeps its engine; the stop is cleared once it ends", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    expect((await s.call("start_audio_recording", { max_duration_ms: 5000 })).isError).toBeUndefined();
+    await s.call("stop_app", { app: "TextEdit" });
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use"); // engine kept
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+    await s.call("stop_audio_recording"); // the deferred replacement happens now
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+  });
+
+  test("the trusted bridge service refuses TurnEnded (it would block every other client)", async () => {
+    await expect(handleRpc({ type: "turnEnded", threadID: "t", turnID: "1" })).rejects.toThrow("unsupported cuabridge request: turnEnded");
+  });
+
   test("the turn ends after Claude goes quiet", async () => {
     const sb = sandbox({ OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await sleep(500);
-    expect(sb.events().filter((e) => e.ev === "rpc").map((e) => e.msg.type)).toEqual(["turnEnded"]);
+    expect(sb.events().filter((e) => e.ev === "turn_ended").length).toBe(1);
+    expect(sb.events().filter((e) => e.ev === "rpc").length).toBe(0); // no service TurnEnded
     await s.call("get_app_state", { app: "TextEdit" });
     expect(toolTurns(sb)).toEqual(["1", "2"]);
   });

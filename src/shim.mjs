@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { Approver, promptText } from "./approval.mjs";
 import { BROWSER_TOOLS, HeliumBrowser, discoverEndpoints, isBrowserTool, verifyEndpoint } from "./browser.mjs";
-import { explain } from "./diagnose.mjs";
+import { diagnose, explain } from "./diagnose.mjs";
 import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
@@ -16,7 +16,7 @@ import { Observations, limitOutput } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 // OpenAI's guidance, read once at startup from the installed app (see guidance.mjs).
 const DOCS = discover();
@@ -27,20 +27,44 @@ const log = logger("shim.log");
 const approver = new Approver({ log }); // per-app approval (approval.mjs)
 const focus = new FocusGuard({ log });  // undoes focus theft by the target app (focus.mjs)
 
-// Turns. SkyComputerUseService scopes user stops to a turn and refuses late
-// calls from an ended turn. MCP has no turn boundary, so a turn ends when
-// Claude goes quiet (OAI_CUA_TURN_IDLE_MS, default 60s), when a call is
-// cancelled (the user interrupted Claude), or after stop_app.
+// Turns. Every cell carries this session's turn id. MCP has no turn
+// boundary, so a turn ends when Claude goes quiet (OAI_CUA_TURN_IDLE_MS,
+// default 60s), when a call is cancelled (the user interrupted Claude), or
+// after stop_app. A stop (the user's, or stop_app's) lasts until the
+// service's connection to this engine closes; the service's own turn-end
+// request would clear it but blocks every other client (see engine.endTurn).
+// So stop_app replaces the engine at once, and a turn in which the user's
+// stop was seen replaces it when the turn ends: the app works again in the
+// next turn, and nothing is ever retried.
 const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
-const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0 };
+const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0, stopped: false };
+let clearStops = false; // replace the engine when it can (a recording holds it)
 async function endTurn(why) {
   clearTimeout(turn.timer);
   if (!turn.used) return;
   const ended = { thread: turn.thread, turn: String(turn.n) };
   turn.n++;
   turn.used = false;
+  if (turn.stopped) clearStops = true;
+  turn.stopped = false;
   log(`turn ${ended.turn} ends: ${why}`);
-  try { await engine.endTurn(ended); } catch (e) { log(`turn end failed: ${e.message}`); }
+  const ending = engine.endTurn(ended).catch((e) => log(`turn end failed: ${e.message}`));
+  await Promise.all([ending, releaseStops(`stops from turn ${ended.turn}`)]); // the replacement is queued before any new call
+}
+async function releaseStops(why) {
+  if (!engine.running) clearStops = false; // its connection is gone, and its stops with it
+  if (!clearStops || engine.recording) return;
+  clearStops = false;
+  observations.forget();
+  log(`replacing the engine to clear ${why}`);
+  await engine.recycle("clear stops");
+}
+
+// Did the user's stop refuse this call?
+function userStopped(r) {
+  let msg = r.isError ? r.content[0]?.text : null;
+  if (!r.isError) try { msg = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail?.error; } catch {}
+  return diagnose(msg)?.kind === "user-stopped";
 }
 
 const engine = new Engine({
@@ -140,7 +164,9 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
+      clearStops = true;
       await endTurn("stop_app");
+      await releaseStops("stop_app"); // also when the turn had no other calls
     }
     return r;
   } finally {
@@ -165,22 +191,28 @@ async function execute(name, args, signal) {
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
   const p = plan(name, args);
   const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, p);
+  const apps = targetApps(name, args);
   for (let attempt = 0; ; attempt++) {
     try {
       const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
-      const r = await (isUiAction(name) ? focus.around(targetApps(name, args), run) : run());
+      const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
+      if (apps.length && userStopped(r)) turn.stopped = true;
       if (name === "run_cua_js") { // the script's own output and errors, as the REPL returned them
         if (!r.isError) return withDocs(extractOutput(r.content, MARK) ?? []);
         const out = extractOutput(r.content.slice(1), MARK) ?? [];
         return { content: limitOutput([r.content[0] ?? { type: "text", text: "script failed" }, ...out]), isError: true };
       }
       const out = extractOutput(r.content, MARK);
-      if (name === "start_audio_recording" && !r.isError) engine.keepAliveUntil(Date.now() + Number(args.max_duration_ms ?? 60000) + 5000);
-      if (name === "stop_audio_recording") engine.keepAliveUntil(0);
+      if (name === "start_audio_recording" && !r.isError) {
+        const ms = Number(args.max_duration_ms ?? 60000) + 5000;
+        engine.keepAliveUntil(Date.now() + ms);
+        setTimeout(() => releaseStops("stops deferred during the recording"), ms + 100).unref?.();
+      }
+      if (name === "stop_audio_recording") { engine.keepAliveUntil(0); await releaseStops("stops deferred during the recording"); }
       if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
-        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").slice(0, 1000).trim(); // REPL errors come first
+        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").slice(0, 1000).trim(); // REPL errors come first
         return text(explain(msg || "computer-use action failed"), true);
       }
       if (!p.render) return withDocs(out);

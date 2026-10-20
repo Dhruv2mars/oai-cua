@@ -1,6 +1,7 @@
 // Regression tests: real shim + engine processes against a fake cua-repl.
 // Run with `bun run check` (bun test runner; the shim itself runs on Node).
 import { afterEach, describe, expect, test } from "bun:test";
+import { FirstUse } from "../src/guidance.mjs";
 import { diffTree, limitOutput } from "../src/observe.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -320,8 +321,28 @@ describe("guidance", () => {
     expect((await s.rpc("resources/read", { uri: "oai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
   });
 
+  test("an error ahead of the start marker is not taken for docs", async () => {
+    const sb = sandbox({ FAKE_DOCS: "## Computer Use\nFIRST-USE-BODY", FAKE_USER_STOP: "Notes" }), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("FIRST-USE-BODY");
+    expect((await s.call("get_app_state", { app: "Notes" })).isError).toBe(true); // the REPL puts the error first
+    const r = await s.call("get_app_state", { app: "TextEdit", mode: "text" });
+    expect(textOf(r)).toBe(FULL);
+    expect((await s.rpc("resources/read", { uri: "oai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
+  });
+
+  test("FirstUse: docs once, even with output glued on; other text is ignored", () => {
+    const f = new FirstUse(new Map(), ["get_app_state"]);
+    const docs = "## Computer Use\nBODY\n# Computer Use Confirmations Policy\nRULES";
+    f.add(["Computer Use was not approved to use Activity Monitor", `stale output${docs}`]);
+    expect(f.take().text).toContain(docs);
+    f.add([`${docs}\n38 HelpFull accessibility tree of Calculator:`, "This application session has been explicitly stopped", docs]);
+    expect(f.take()).toBeNull();
+    expect(f.text()).toBe(docs);
+  });
+
   test("docs a REPL prints mid-session (reset) are captured from before the cell's start marker", async () => {
-    const sb = sandbox({ FAKE_DOCS: "", FAKE_REPL_RESET: path.join(os.tmpdir(), `reset-${process.pid}-${Date.now()}`), FAKE_RESET_DOCS: "RESET-DOCS" }), s = startShim(sb);
+    const sb = sandbox({ FAKE_DOCS: "", FAKE_REPL_RESET: path.join(os.tmpdir(), `reset-${process.pid}-${Date.now()}`), FAKE_RESET_DOCS: "## Computer Use\nRESET-DOCS" }), s = startShim(sb);
     await s.init();
     const r1 = await s.call("press_key", { app: "TextEdit", key: "a" });
     expect(r1.content[0].text).toContain("RESET-DOCS");

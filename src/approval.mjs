@@ -9,8 +9,12 @@
 //     auto (default)  accept, as before this feature existed
 //     prompt          ask with a native macOS dialog
 //     deny-unknown    decline apps that are not already approved
-// Clients that advertise elicitation but cannot show it (headless Claude Code
-// answers `cancel` within milliseconds) are detected and use the fallback.
+// Clients that advertise elicitation but cannot show it answer within
+// milliseconds; no person answers that fast, so they use the fallback. An
+// instant `cancel` (headless Claude Code) always means that. An instant
+// `decline` is also what a deliberate rule sends (e.g. an Elicitation hook),
+// so it counts only under an Agent SDK host such as T3 Code, whose Claude Code
+// declines every prompt it cannot show; elsewhere it stays a refusal.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +22,7 @@ import { STATE_DIR } from "./lib.mjs";
 import { BLOCKED_APP } from "./tools.mjs";
 
 export const POLICIES = ["auto", "prompt", "deny-unknown"];
-const AUTO_CANCEL_MS = 250; // no human dismisses a prompt this fast
+const AUTO_ANSWER_MS = 250; // no human answers a prompt this fast
 
 // Normalizes the engine's elicitation request.
 export function parseRequest(params = {}) {
@@ -44,10 +48,10 @@ export function promptText(r) {
 }
 
 export class Approver {
-  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now } = {}) {
+  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now, sdkHost = /^sdk-(ts|py)$/.test(process.env.CLAUDE_CODE_ENTRYPOINT ?? "") } = {}) {
     this.policy = POLICIES.includes(policy) ? policy : "auto";
     if (policy && policy !== this.policy) log(`unknown OAI_CUA_APPROVAL=${policy}; using auto`);
-    Object.assign(this, { file, log, dialog, now });
+    Object.assign(this, { file, log, dialog, now, sdkHost });
     this.session = new Set();   // keys approved in this Claude session
     this.elicit = null;         // (request, signal) → Promise<{action, content}>, set when the client can elicit
     this.clientCannotAsk = false;
@@ -87,9 +91,10 @@ export class Approver {
       const t = this.now();
       try {
         const res = await this.elicit(r, signal);
-        if (res?.action === "cancel" && this.now() - t < AUTO_CANCEL_MS) {
+        const ms = this.now() - t;
+        if ((res?.action === "cancel" || (res?.action === "decline" && this.sdkHost)) && ms < AUTO_ANSWER_MS) {
           this.clientCannotAsk = true; // answered by software, not a person
-          this.log("client cancelled the approval prompt instantly; using the fallback policy from now on");
+          this.log(`client answered the approval prompt with ${res.action} in ${ms}ms; using the fallback policy from now on`);
         } else if (res?.action === "accept" || res?.action === "decline" || res?.action === "cancel")
           return { action: res.action, always: res.content?.always === true, via: "elicitation" };
       } catch (e) {

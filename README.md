@@ -130,9 +130,16 @@ API. Arguments are embedded as JSON literals.
   OpenAI's risk level and an "Always allow" choice. It asks once per app per
   session. Always-allowed apps are saved in `approvals.json` in the state dir
   (mode `0600`). Delete an entry to be asked again. Some clients advertise
-  elicitation but answer it instantly with `cancel`, which headless Claude Code
-  does in about 4 ms. For those clients, and for clients without elicitation,
-  the `approval` option (`OAI_CUA_APPROVAL`) decides:
+  elicitation but answer it themselves within milliseconds. No person answers
+  that fast. An instant `cancel` (headless Claude Code, about 4 ms) always
+  counts as "this client can't ask". An instant `decline` counts only under an
+  Agent SDK host (`CLAUDE_CODE_ENTRYPOINT` `sdk-ts` or `sdk-py`, e.g. T3 Code, about 2 ms),
+  whose Claude Code declines every prompt it can't show. Elsewhere it stays a
+  refusal, so an Elicitation hook that declines an app still works. If such a
+  host has its own deliberate decline rules, set `approval` to `prompt` or
+  `deny-unknown` so they aren't replaced by `auto`. For those
+  clients, and for clients without elicitation, the `approval` option
+  (`OAI_CUA_APPROVAL`) decides:
   - `auto` (the default) accepts.
   - `prompt` shows a native macOS dialog.
   - `deny-unknown` declines apps that are not already allowed.
@@ -306,21 +313,31 @@ concurrently.
 
 ### Turns
 
-OpenAI's service scopes some state to a *turn*. A stop lasts until the turn
-ends. A late call from an ended turn is refused. MCP has no turn boundaries, so
+OpenAI's service scopes some state to a *turn*. MCP has no turn boundaries, so
 every call carries this session's turn id, and the shim ends the turn when one
 of these happens:
 
 - Claude makes no calls for `OAI_CUA_TURN_IDLE_MS` (default 60000; 0 disables
   this).
 - A call is cancelled, for example because you interrupted Claude.
-- `stop_app` runs. The app is then released without staying blocked.
+- `stop_app` runs.
 
-At turn end, the shim sends the service's turn-ended request through a small
-trusted `node_repl` service of its own (`src/bridge-service.mjs`). That
-service loads OpenAI's IPC client from the installed app at runtime, and only
-allows resolve, stop-app and turn-ended requests. The shim also calls cua-repl's
-`turn_ended` lifecycle tool. The next call starts a new turn.
+At turn end the shim calls cua-repl's `turn_ended` lifecycle tool. It does
+**not** send the service's own turn-ended request: while the engine that sent
+it is alive, the service refuses *every other* client with "the current turn
+ended", so two Claude sessions would block each other for minutes.
+
+A stop (yours from the menu bar, or `stop_app`'s) lasts until the service's
+connection to the engine closes. So `stop_app` replaces the engine at once,
+and the app is released without staying blocked. A stop of yours is honoured
+for the rest of the turn; when that turn ends, the engine is replaced and the
+app works again in the next turn. Nothing is retried. While an audio
+recording is running the engine is kept, and the replacement waits for the
+next turn end after it.
+
+Stopping and resolving apps go through a small trusted `node_repl` service of
+the shim's own (`src/bridge-service.mjs`). It loads OpenAI's IPC client from
+the installed app at runtime and only allows resolve and stop-app requests.
 
 ## Development
 
@@ -370,11 +387,16 @@ rest are for development (the pre-rename `OPENAI_CUA_*` names are still read for
   gate. Use `prompt` or `deny-unknown` for a per-app gate in headless use.
 - `stop_app` and a stop from ChatGPT's menu bar are service-wide. They also end
   that app's sessions for other clients using it at the same moment.
-- A stop made by *another* client lasts until that client's engine exits. A
-  turn end here doesn't clear it.
+- A stop made by *another* client lasts until that client's engine exits.
+  Replacing this shim's engine doesn't clear it.
+- A stop of yours ends with its turn, and `stop_app` (on any app) or 60 s of
+  quiet ends the turn. So if Claude calls `stop_app` right after being told
+  you stopped an app, your app is usable again at once.
+- A `stopApp` sent from a `run_cua_js` script isn't followed by an engine
+  replacement, so that app stays stopped for every client until the engine is
+  released when idle (5 minutes). Use the `stop_app` tool instead.
 - `run_cua_js` scripts can call the bridge's trusted service too. It only
-  offers resolve, stop-app and turn-ended; none of them can answer an
-  approval.
+  offers resolve and stop-app; neither can answer an approval.
 
 Measured results are in [VERIFICATION.md](VERIFICATION.md). The v0.1 audit is
 in [AUDIT.md](AUDIT.md).

@@ -11,6 +11,11 @@
 // FAKE_TREE_FILE (JSON {app: tree} read on every capture), FAKE_NO_SHOT.
 // FAKE_TAKEOVER (first N actions fail with the service's "user changed" error),
 // FAKE_BY_ID (getApp only accepts bundle ids), FAKE_ERROR (getApp throws it).
+// FAKE_STICKY_STOP: a stopped app stays stopped until this process exits, as
+// with SkyComputerUseService (only its TurnEnded, which the bridge never
+// sends, would clear it sooner);
+// FAKE_USER_STOP: comma-separated apps the user stopped; only the first fake
+// process started for this FAKE_LOG sees them (a new engine is clean).
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -60,8 +65,12 @@ const treeOf = (name) => {
 };
 const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable for fake."); return new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); };
 // Without disableDiffing the real engine answers with its own (shared-baseline) diff.
-const capture = (name, o, kind) => { record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
+const capture = (name, o, kind) => { if (isStopped(name)) throw new Error(STOPPED); record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
 let takeovers = Number(E.FAKE_TAKEOVER || 0);
+const STOPPED = "This application session has been explicitly stopped by the user for this turn. Stop your work and send a final message noting they stopped the session and you're ready to continue if they want you to. Computer Use can be used again in the next assistant turn.";
+const firstProcess = (() => { try { fs.writeFileSync(`${E.FAKE_LOG}.started`, "", { flag: "wx" }); return true; } catch { return false; } })();
+const stopped = new Set(firstProcess ? (E.FAKE_USER_STOP || "").split(",").filter(Boolean).map((s) => s.toLowerCase()) : []);
+const isStopped = (name) => stopped.has(String(name).toLowerCase());
 const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
@@ -82,8 +91,8 @@ globalThis.nodeRepl = {
   emitImage: async (img) => out.push({ type: "image", mimeType: "image/jpeg", data: Buffer.from(img).toString("base64") }),
   async rpc(service, msg) { // the bridge's trusted service
     record({ ev: "rpc", service, msg });
+    if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopped.add(msg.app.toLowerCase()).add(`com.example.${msg.app}`.toLowerCase());
     if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
-    if (msg.type === "turnEnded") return {};
     throw new Error(`unsupported cuabridge request: ${msg.type}`);
   },
   ...(E.NODE_REPL_ENABLE_AUDIO === "1" ? { emitAudio: async (url) => out.push({ type: "audio", mimeType: "audio/wav", data: url.slice(url.indexOf(",") + 1) }) } : {}),
@@ -122,6 +131,7 @@ const makeCua = () => ({
   async getApp(name) {
     record({ ev: "getApp", name });
     if (E.FAKE_ERROR) throw new Error(E.FAKE_ERROR);
+    if (isStopped(name)) throw new Error(STOPPED);
     if (E.FAKE_BY_ID && !/^[a-z]+\.[a-z]+\./.test(name)) throw new Error("Computer Use server error -10010: Invalid app");
     await computer.get_app_state({ app: name, disableDiff: true });
     nodeRepl.write(`auto-emitted state for ${name}`); // real getApp emits state too

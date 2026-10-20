@@ -736,3 +736,80 @@ in-process units. They cover:
   unit-tested through an injected dialog.
 - **The interactive Claude Code elicitation UI.** Not exercised. Headless
   behaviour was measured, as above.
+
+---
+
+# 0.2.1: acceptance-test fixes (2026-10-20)
+
+A full acceptance run of the installed 0.2.0 plugin in T3 Code (37 tools,
+separate thread) found five bugs. Each fix has a regression test that fails
+without it (checked by reverting `src/` and rerunning).
+
+| Bug | Cause | Fix | Evidence |
+|---|---|---|---|
+| B1: every app declined in T3 Code, with no prompt | T3's Claude Code answers elicitation with `decline` in ~2–36 ms; only a fast `cancel` counted as "client can't ask" | A `cancel` under 250 ms, or a `decline` under 250 ms under an Agent SDK host (`CLAUDE_CODE_ENTRYPOINT` `sdk-ts`/`sdk-py`), uses the `approval` fallback. In the interactive CLI an instant decline (e.g. an Elicitation hook) stays a refusal | Test "an instant decline … falls back to the policy". Live: `client answered the approval prompt with decline in 2ms; using the fallback policy` → `com.apple.calculator … accept via policy auto` |
+| B2: an app stays "explicitly stopped by the user" after `stop_app` until the engine exits | A stop lasts until the service's connection to the engine closes, unless the service's TurnEnded clears it, and TurnEnded is what causes B6 | **Superseded by the B6 redesign below**: `stop_app` replaces the engine at once; a turn with a user stop replaces it at turn end; nothing is retried | Tests "a stop that the service keeps is gone after stop_app…", "a user stop is honoured for the rest of the turn…", "an audio recording keeps its engine…" (fake `FAKE_STICKY_STOP`, `FAKE_USER_STOP`) |
+| B3: errors and stale output resent as "first-use docs"; tree printed twice | Everything ahead of a cell's start marker counted as docs, including the REPL's error and late output from an earlier cell | Only text from a `# Computer Use` heading on is docs; text that contains (or is contained in) docs already seen is not resent | Tests "an error ahead of the start marker…" and "FirstUse: docs once…". Live: an `Invalid app` error, then the next `get_app_state` had no docs block |
+| B4: `browser_open_tab` returned `(empty page)` | A new tab is a finished `about:blank` until the URL commits, so the load wait returned at once. New-tab links had the same path | Tabs (and new-tab links) open blank, then `Page.navigate`, then wait for that load | Fake CDP now models the late commit; 2 tests fail without the fix. Live, throwaway Helium (temp profile, `OAI_CUA_HELIUM_CDP=9333`): `Opened t1 … Title: Example Domain` in 546 ms |
+| B5: `native …: exit 1` logged on every idle release | The launcher reports the client's SIGTERM as exit 1 | After `stop()`, the exit is logged as `stopped` | Test "an idle release is logged as a stop" |
+
+Review (Claude Opus; Codex was out of quota) found that the first B1/B2 fix
+could turn a deliberate instant decline into an approval, override a later
+user stop, re-run batch steps and kill an audio recording. All fixed as
+above; each has a test that fails on the first-round code.
+
+A second review round found that a multi-app batch, a user stop on another
+app, `run_cua_js` and `stop_app` output parsing could still lead to a user
+stop being undone. Fixed: the restart keys on the failing step's app; it is
+skipped while any user stop is live on the engine; `run_cua_js` drops
+`stop_app` records; only `Stopped …` lines (any text item, display names with
+parentheses) create records; the SDK-host check is `sdk-ts`/`sdk-py` only.
+Two more tests, each failing on the round-2 code.
+
+A third round found that a user stop landing during the first action after
+`stop_app` could still be undone (and the action re-run), and that a batch
+failing early cleared user-stop records for apps it never reached. Fixed:
+cells write a per-session random "opened" sentinel once the app's session is
+open (batch steps report `opened`), and only a stop that failed while opening
+the app is retried; stop records are cleared only for apps whose session
+actually opened. Live: the sentinel never appears in any result. Two more
+tests, each failing on the round-3 code.
+
+### B6 and the B2 redesign
+
+While testing round 4 live, every client on the Mac was refused with
+"Computer Use is unavailable because the current turn ended. It will work
+again after the next user message." It began when another Claude session in
+T3 (still on 0.2.0) ended a turn, and lifted the second its engine exited
+(11:53:37 exit → 11:53:40 `list_apps` OK).
+
+Two-shim reproduction (A ends a turn on idle and stays alive; B calls 5 s later):
+
+| A's turn end sends | B's `list_apps` |
+|---|---|
+| service TurnEnded + cua-repl `turn_ended` (0.2.0) | refused, "the current turn ended" |
+| service TurnEnded only | refused |
+| cua-repl `turn_ended` only | OK |
+| TurnEnded, then a cell opening the next turn | still refused |
+
+So the service's TurnEnded request (B6) blocks every other client for as long
+as the sender's engine lives (up to the 5-minute idle release): two ordinary
+Claude sessions block each other. It is no longer sent. Stops are cleared by
+closing the engine's connection instead, which also covers B2 without any
+retry: `stop_app` replaces the engine at once, and a turn in which a user
+stop was seen replaces it when the turn ends. The `ownStops`/`userStops`
+tracking and the "opened" sentinel from review rounds 1-4 are removed.
+
+Live after the change:
+- A ends a turn on idle, B's `list_apps` → OK (630 ms).
+- A: `get_app_state Calculator`, `stop_app Calculator` (`replacing the engine to clear stops from turn 1`), `get_app_state Calculator` → OK on the fresh engine; B meanwhile: `list_apps` and `get_app_state Calculator` → OK.
+
+A review of the redesign found no correctness bug (three of its tests fail on
+the previous commit). Cleanups applied: the replacement is queued before
+waiting for cua-repl's `turn_ended`; a pending replacement is dropped once the
+engine has exited, and runs when a recording ends (by `stop_audio_recording`
+or its timer); the trusted service rejects anything but resolve/stop-app
+before loading OpenAI's client (tested); "current turn ended" guidance now
+names the other client as the cause.
+
+`bun run check`: 96 pass, 0 fail.

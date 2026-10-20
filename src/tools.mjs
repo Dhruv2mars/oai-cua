@@ -310,14 +310,17 @@ await emit(states);
     return head + `const targets = A.app != null ? [A.app] : [...__cb.apps.keys()];
 const lines = [];
 for (const t of targets) {
+  let r;
   try {
     const stop = (app) => nodeRepl.rpc("cuabridge", { type: "stopApp", app });
-    let r;
     try { r = await stop(__cb.ids?.get(t) ?? t); }
     catch (e) { const id = /invalid app|not found|ambiguous/i.test(e.message) ? await __cb.lookup(t) : null; if (!id) throw e; r = await stop(id); }
     lines.push("Stopped " + (r.displayName ?? t) + (r.bundleIdentifier ? " (" + r.bundleIdentifier + ")" : "") + ".");
   } catch (e) { lines.push("Could not stop " + t + ": " + e.message); }
-  __cb.apps.delete(t);
+  // Drop every cached session of this app, whatever name it was opened under.
+  const gone = new Set([t, r?.displayName, r?.bundleIdentifier].filter(Boolean).map((s) => String(s).toLowerCase()));
+  for (const k of [...__cb.apps.keys()])
+    if (gone.has(String(k).toLowerCase()) || gone.has(String(__cb.ids.get(k) ?? "").toLowerCase())) __cb.apps.delete(k);
 }
 nodeRepl.write(${M} + (lines.join("\\n") || "No app sessions to stop."));
 }`;

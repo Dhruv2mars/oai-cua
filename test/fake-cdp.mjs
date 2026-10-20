@@ -17,7 +17,7 @@ export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://m
   const info = (t) => ({ targetId: t.targetId, type: t.type, url: t.url, title: t.title, ...(t.openerId ? { openerId: t.openerId } : {}) });
   for (const u of userTabs) addTarget(u.url, u.title);
   const bySession = (s) => [...targets.values()].find((t) => t.session === s);
-  const ax = (t) => [
+  const ax = (t) => t.url === "about:blank" ? [{ nodeId: "1", role: { value: "RootWebArea" }, name: { value: "" } }] : [
     { nodeId: "1", role: { value: "RootWebArea" }, name: { value: t.title }, childIds: ["2", "3", "4", "5", "6", "7"] },
     { nodeId: "2", parentId: "1", role: { value: "button" }, name: { value: "Go" }, backendDOMNodeId: 10 },
     { nodeId: "3", parentId: "1", role: { value: "textbox" }, name: { value: "Name" }, value: { value: t.value }, backendDOMNodeId: 11 },
@@ -36,7 +36,11 @@ export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://m
       case "Browser.getVersion": return reply({ product: "Chrome/141.0.0.0", userAgent: "Helium" });
       case "Target.setDiscoverTargets": return reply({});
       case "Target.getTargets": return reply({ targetInfos: [...targets.values()].map(info) });
-      case "Target.createTarget": { const nt = addTarget(p.url, p.url === "about:blank" ? "about:blank" : `Page ${p.url}`); return reply({ targetId: nt.targetId }); }
+      case "Target.createTarget": { // like Chromium: a finished about:blank first, the URL commits later
+        const nt = addTarget("about:blank", "about:blank");
+        if (p.url !== "about:blank") setTimeout(() => { nt.url = p.url; nt.title = `Page ${p.url}`; }, 60);
+        return reply({ targetId: nt.targetId });
+      }
       case "Target.attachToTarget": { const at = targets.get(p.targetId); at.session = `S-${at.targetId}`; return reply({ sessionId: at.session }); }
       case "Target.detachFromTarget": { const dt = bySession(p.sessionId); if (dt) dt.session = null; emit({ method: "Target.detachedFromTarget", params: { sessionId: p.sessionId } }); return reply({}); }
       case "Target.closeTarget": targets.delete(p.targetId); emit({ method: "Target.targetDestroyed", params: { targetId: p.targetId } }); return reply({ success: true });

@@ -1,6 +1,6 @@
 // Trusted node_repl service for bridge cells (registered as "cuabridge" in
 // NODE_REPL_TRUSTED_SERVICES). OpenAI's public `cua` API has no way to stop an
-// app session or end a turn; SkyComputerUseService does, through requests on
+// app session; SkyComputerUseService does, through requests on
 // its native pipe that only trusted services can reach. This exposes a fixed
 // allowlist of them. OpenAI's IPC client is loaded at runtime from the
 // installed ChatGPT.app, never copied here.
@@ -24,7 +24,10 @@ const text = (v, name) => {
   return v;
 };
 
+const ALLOWED = new Set(["resolve", "stopApp"]); // never TurnEnded: it blocks every other client
+
 export async function handleRpc(msg) {
+  if (!ALLOWED.has(msg?.type)) throw new Error(`unsupported cuabridge request: ${msg?.type}`);
   const c = await sky();
   switch (msg?.type) {
     case "resolve": { // app name/path/bundle id → the service's identity for it
@@ -39,9 +42,6 @@ export async function handleRpc(msg) {
       const r = await c.request("ComputerUseIPCAppStopRequest", { app: appPath }, { timeoutSeconds: 10 });
       return { bundleIdentifier: p.target.bundleIdentifier, displayName: p.target.displayName, active: r?.active ?? null };
     }
-    case "turnEnded": // ends the turn: clears per-turn stops and fences late calls from it
-      await c.request("ComputerUseIPCCodexTurnEndedRequest", { threadID: text(msg.threadID, "threadID"), turnID: text(msg.turnID, "turnID") }, { timeoutSeconds: 10 });
-      return {};
     default:
       throw new Error(`unsupported cuabridge request: ${msg?.type}`);
   }
