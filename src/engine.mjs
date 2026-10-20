@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findRuntime, makeLineReader, writeLine } from "./lib.mjs";
+import { VERSION, findRuntime, makeLineReader, writeLine } from "./lib.mjs";
 import { BLOCKED_APP } from "./tools.mjs";
 
 const PROTOCOL = "2025-06-18";
@@ -154,7 +154,7 @@ export class Engine {
     const init = await this.#request(inst, "initialize", {
       protocolVersion: PROTOCOL,
       capabilities: { elicitation: {} },
-      clientInfo: { name: "oai-cua", version: "0.2.1" },
+      clientInfo: { name: "oai-cua", version: VERSION },
     }, t);
     if (init.error || typeof init.result?.protocolVersion !== "string" || !init.result.capabilities?.tools)
       throw new EngineError(`engine rejected initialize: ${JSON.stringify(init.error || init.result).slice(0, 300)}`, "ENGINE_START");
@@ -254,7 +254,7 @@ export class Engine {
   // until this engine exits. Stops are cleared by replacing the engine instead.
   async endTurn({ thread, turn }) {
     const inst = this.cur;
-    if (!inst || inst.dead || inst.retired) return false;
+    if (!inst || inst.dead || inst.retired || inst.replaced) return false; // a replaced engine's turn ends with it
     const r = await inst.ready.then(() => this.#request(inst, "tools/call", { name: "turn_ended", arguments: { hook_event_name: "Stop", session_id: thread, turn_id: turn } }, 10000)).catch((e) => ({ error: e }));
     const bad = r.error?.message || (r.result?.isError && r.result.content?.[0]?.text);
     this.log(`engine#${inst.id} turn ${turn} ended${bad ? ` (${String(bad).slice(0, 300)})` : ""}`);
@@ -264,6 +264,7 @@ export class Engine {
   // Replaces the engine after the cells queued so far, without cancelling any
   // of them; the next cell starts a fresh one.
   recycle(why = "recycle") {
+    if (this.cur) this.cur.replaced = true;
     const job = this.queue.then(() => (this.cur ? this.#retire(this.cur, why) : undefined));
     this.queue = job.catch(() => {});
     return job;

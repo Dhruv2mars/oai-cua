@@ -11,12 +11,11 @@ import { diagnose, explain } from "./diagnose.mjs";
 import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
-import { STATE_DIR, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
+import { STATE_DIR, VERSION, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
 import { Observations, limitOutput } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
-const VERSION = "0.2.1";
 const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 // OpenAI's guidance, read once at startup from the installed app (see guidance.mjs).
 const DOCS = discover();
@@ -48,8 +47,8 @@ async function endTurn(why) {
   if (turn.stopped) clearStops = true;
   turn.stopped = false;
   log(`turn ${ended.turn} ends: ${why}`);
-  const ending = engine.endTurn(ended).catch((e) => log(`turn end failed: ${e.message}`));
-  await Promise.all([ending, releaseStops(`stops from turn ${ended.turn}`)]); // the replacement is queued before any new call
+  const releasing = releaseStops(`stops from turn ${ended.turn}`); // queued before any new call, and before endTurn looks at the engine
+  await Promise.all([releasing, engine.endTurn(ended).catch((e) => log(`turn end failed: ${e.message}`))]);
 }
 async function releaseStops(why) {
   if (!engine.running) clearStops = false; // its connection is gone, and its stops with it

@@ -38,7 +38,7 @@ export const BROWSER_TOOLS = [
     description: "Navigate a tab you opened or claimed to a URL, or go back, forward or reload, without bringing Helium to the front. Navigating to the URL the tab already shows is skipped (use action \"reload\" to reload).",
     inputSchema: obj({ tab: TAB, url: { type: "string" }, action: { type: "string", enum: ["back", "forward", "reload"] } }, ["tab"]) },
   { name: "browser_snapshot", readOnly: true,
-    description: "Accessibility snapshot of a tab: roles, names, values and states, each interactive element tagged with a ref (e.g. [ref=e42]) that stays valid while the element exists. Works on background tabs. Returns a diff against this tab's previous snapshot unless full is true.",
+    description: "Accessibility snapshot of a tab: roles, names, values and states, each interactive element tagged with a ref (e.g. [ref=e42]). Use refs from the latest snapshot or action result; a navigation invalidates them. Works on background tabs. Returns a diff against this tab's previous snapshot unless full is true.",
     inputSchema: obj({ tab: TAB, full: { type: "boolean", description: "Return the whole tree instead of a diff. Defaults to false" } }, ["tab"]) },
   { name: "browser_read", readOnly: true,
     description: "Read the visible text of a tab (title, URL and page text), including background tabs, in pages of max_chars.",
@@ -459,6 +459,7 @@ export class HeliumBrowser {
       waiters.forEach((w) => w());
       if (t.closing && p.type === "beforeunload") this.cdp?.send("Page.handleJavaScriptDialog", { accept: true }, t.session).catch(() => {});
     } else if (m.method === "Page.javascriptDialogClosed") t.dialog = null;
+    else if (m.method === "Page.frameNavigated" && !p.frame?.parentId) t.last = null; // a new document: old refs and diffs no longer apply
     else if (m.method === "Page.frameStartedLoading" && p.frameId === t.targetId) t.loading = true;
     else if (m.method === "Page.frameStoppedLoading" && p.frameId === t.targetId) { t.loading = false; t.loadWaiters.forEach((w) => w()); t.loadWaiters = []; }
   }
@@ -497,7 +498,8 @@ export class HeliumBrowser {
     if (t.session) return;
     const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
     t.session = sessionId;
-    // Page events report dialogs (re-sent for one already open) and loading.
+    t.last = null; // navigations while detached went unseen
+    // Page events report dialogs (re-sent for one already open), navigation and loading.
     await this.#send(t, "Page.enable");
   }
 
@@ -543,7 +545,10 @@ export class HeliumBrowser {
     return `A JavaScript ${d.type} dialog is open in ${t.alias}: ${quote(d.message ?? "", 500)}${d.type === "prompt" ? ` (default ${quote(d.defaultPrompt ?? "")})` : ""}. The page is frozen until you call browser_handle_dialog.`;
   }
 
+  // Refs are valid only from the tab's latest snapshot of its current document:
+  // a node of the previous document can still resolve, at its old position.
   async #node(t, ref) {
+    if (!t.last?.refs.has(ref)) throw new CdpError(`ref ${ref} is not in ${t.alias}'s latest snapshot (the page changed or navigated); take a new browser_snapshot`);
     const backendNodeId = Number(ref.slice(1));
     try { await this.#send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }); }
     catch (e) { throw new CdpError(/No node|Could not find/i.test(e.message) ? `ref ${ref} no longer exists in ${t.alias}; take a new browser_snapshot` : e.message); }
@@ -569,6 +574,12 @@ export class HeliumBrowser {
     return r.result?.value;
   }
 
+  // A hidden tab drops mouse and key input until it has drawn a frame of its
+  // current document (Chromium); a 1×1 capture draws one in ~50ms.
+  async #frame(t) {
+    await this.#send(t, "Page.captureScreenshot", { format: "jpeg", clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }, 2000).catch(() => {}); // bounded: a dialog can block it
+  }
+
   async #evaluate(t, expression) {
     const { frameTree } = await this.#send(t, "Page.getFrameTree");
     const { executionContextId } = await this.#send(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "oai-cua" });
@@ -584,12 +595,12 @@ export class HeliumBrowser {
   async #snapshot(t, { full = false } = {}) {
     if (t.dialog) return this.#dialogNotice(t);
     const { nodes = [] } = await this.#send(t, "Accessibility.getFullAXTree");
+    // Stored before any other await, so a navigation reported after this tree clears it.
+    const lines = formatAXTree(nodes);
+    const prev = t.last?.lines;
+    t.last = { lines, refs: new Set(lines.join("\n").match(/(?<=\[ref=)e\d+(?=\])/g)) };
     const info = (await this.#pages()).find((p) => p.targetId === t.targetId) ?? t.info ?? {};
-    let lines = formatAXTree(nodes);
     const head = `Tab ${t.alias} ${this.#flags(t)}`.trim() + `\nTitle: ${info.title ?? ""}\nURL: ${info.url ?? ""}`;
-    const doc = String(info.url ?? "").split("#")[0];
-    const prev = t.last?.doc === doc ? t.last.lines : null;
-    t.last = { doc, lines };
     let body;
     if (prev && !full) {
       const d = diffLines(prev, lines);
@@ -670,7 +681,7 @@ export class HeliumBrowser {
 
   async $claim_tab({ tab }) {
     const t = await this.#resolve(tab);
-    if (t.owned) return [`${t.alias} is already yours.`, await this.#snapshot(t, { full: true })];
+    if (t.owned || t.claimed) return [`${t.alias} is already yours.`, await this.#snapshot(t, { full: true })];
     t.claimed = true;
     return [`Claimed ${t.alias}. It stays open when released.`, await this.#snapshot(t, { full: true })];
   }
@@ -767,7 +778,8 @@ export class HeliumBrowser {
       }
       ({ x, y } = await this.#center(t, id, ref));
     }
-    // Hidden tabs acknowledge mouseMoved only after a frame (~5s): don't wait.
+    await this.#frame(t);
+    // Hidden tabs can acknowledge mouseMoved only after their next frame (~5s): don't wait.
     await Promise.race([this.#input(t, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers: mods }), sleep(50)]);
     for (let i = 1; i <= click_count && !t.dialog; i++) {
       await this.#input(t, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: i, modifiers: mods });
@@ -779,6 +791,7 @@ export class HeliumBrowser {
   async #key(t, spec) {
     const k = parseKey(spec);
     const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode, modifiers: k.modifiers };
+    await this.#frame(t);
     await this.#input(t, "Input.dispatchKeyEvent", { type: k.text ? "keyDown" : "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}), ...(k.command ? { commands: [k.command] } : {}) });
     if (!t.dialog) await this.#input(t, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }

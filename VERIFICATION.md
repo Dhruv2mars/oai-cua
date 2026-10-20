@@ -813,3 +813,18 @@ before loading OpenAI's client (tested); "current turn ended" guidance now
 names the other client as the cause.
 
 `bun run check`: 96 pass, 0 fail.
+
+# 0.2.2: browser input in hidden tabs, stale refs (2026-10-20)
+
+A second acceptance run (0.2.1, T3 Code) confirmed B1–B6 fixed and found:
+
+| Bug | Cause | Fix | Evidence |
+|---|---|---|---|
+| B7: `browser_click` / `browser_press_key` report success but do nothing in a background tab | Chromium drops input to a hidden tab until it has drawn a frame of its current document. Raw CDP: `Input.dispatch*` returns ok, a capturing `mousedown`/`keydown` listener records nothing. Present since the browser surface shipped (0.2.0 and 0.2.1 shims behave the same) | Each click and key first draws one frame with a 1×1 `Page.captureScreenshot` (~40–55ms) | Raw CDP: after the capture, input arrives (and still does 8s later); a navigation drops it again until the next capture. Live, same sequence on a disposable Helium 155: 0.2.1 `Clicked e30` / `No dialog is open` / `key=none`; this branch `A JavaScript confirm dialog is open in t2: "Proceed?"`, `confirm=false`, `key=a`, and again after a navigation. Fake CDP now drops input until a frame is drawn: 3 tests fail without the fix |
+| B8: a ref from the previous document is still accepted after a navigation | The old node still resolves (`DOM.describeNode` gives the old button, with its old quads), so the click lands at the old position on the new page | Refs are accepted only from the tab's latest snapshot; a main-frame `Page.frameNavigated` (or re-attaching) clears it | Live: `ref e30 is not in t2's latest snapshot (the page changed or navigated); take a new browser_snapshot`. Test fails without the fix |
+| I1: `turn N ended (OpenAI computer-use engine exited (SIGTERM))` after every `stop_app` | `turn_ended` was sent to the engine that was being replaced at the same moment | A turn whose engine is being replaced skips `turn_ended`; the replacement is queued first | Live log after `stop_app`: `replacing the engine…` → `engine#1 exited` with no failed turn end. Test fails without the fix |
+| I4: claiming an already-claimed tab said `Claimed` again | — | `t1 is already yours.` | Live and tested |
+
+Also removed the finished per-thread checklists (`TASKS.md`, `tasks/`), which
+shipped with every plugin install, and the version is now read from
+`package.json` instead of being repeated in the source.

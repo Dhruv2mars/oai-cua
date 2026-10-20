@@ -175,10 +175,10 @@ describe("stop, takeover and turns", () => {
     await s.call("list_apps");
     const ev = sb.events();
     expect(toolTurns(sb)).toEqual(["1", "1", "2"]);
-    const thread = ev.find((e) => e.ev === "cell" && e.turn).turn.thread_id;
     // never the service's TurnEnded: it would block every other client
     expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "stopApp", app: "TextEdit" }]);
-    expect(ev.find((e) => e.ev === "turn_ended").args).toEqual({ hook_event_name: "Stop", session_id: thread, turn_id: "1" });
+    expect(ev.filter((e) => e.ev === "turn_ended").length).toBe(0); // the replaced engine's turn ends with it, no turn_ended racing its shutdown
+    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).not.toMatch(/turn 1 ended \(/);
     expect(new Set(ev.map((e) => e.pid)).size).toBe(2); // list_apps ran on a fresh engine
   });
 
@@ -241,7 +241,8 @@ describe("stop, takeover and turns", () => {
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await sleep(500);
-    expect(sb.events().filter((e) => e.ev === "turn_ended").length).toBe(1);
+    const thread = sb.events().find((e) => e.ev === "cell" && e.turn).turn.thread_id;
+    expect(sb.events().filter((e) => e.ev === "turn_ended").map((e) => e.args)).toEqual([{ hook_event_name: "Stop", session_id: thread, turn_id: "1" }]);
     expect(sb.events().filter((e) => e.ev === "rpc").length).toBe(0); // no service TurnEnded
     await s.call("get_app_state", { app: "TextEdit" });
     expect(toolTurns(sb)).toEqual(["1", "2"]);
