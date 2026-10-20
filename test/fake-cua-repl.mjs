@@ -15,6 +15,7 @@
 // ends don't clear it), as SkyComputerUseService sometimes does;
 // FAKE_USER_STOP: comma-separated apps the user stopped; only the first fake
 // process started for this FAKE_LOG sees them (a new engine is clean).
+// FAKE_STOP_ON_ACTION: comma-separated apps the user stops during an action.
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -66,12 +67,14 @@ const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable
 // Without disableDiffing the real engine answers with its own (shared-baseline) diff.
 const capture = (name, o, kind) => { record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
 let takeovers = Number(E.FAKE_TAKEOVER || 0);
+const STOPPED = "This application session has been explicitly stopped by the user for this turn. Stop your work and send a final message noting they stopped the session and you're ready to continue if they want you to. Computer Use can be used again in the next assistant turn.";
 const firstProcess = (() => { try { fs.writeFileSync(`${E.FAKE_LOG}.started`, "", { flag: "wx" }); return true; } catch { return false; } })();
 const stopped = new Set(firstProcess ? (E.FAKE_USER_STOP || "").split(",").filter(Boolean) : []);
 const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
     if (args[0] === "FAIL") throw new Error(`fake ${method} failure`);
+    if ((E.FAKE_STOP_ON_ACTION || "").split(",").includes(name)) throw new Error(STOPPED);
     if (takeovers > 0) { takeovers--; throw new Error(`The user changed '${name}'. Re-query the latest state with \`get_app_state\` before sending more actions.`); }
     if (method === "click" && E.FAKE_AUDIO_ELICIT_ON_CLICK) await audioApproval().catch(() => {});
   };
@@ -129,7 +132,7 @@ const makeCua = () => ({
   async getApp(name) {
     record({ ev: "getApp", name });
     if (E.FAKE_ERROR) throw new Error(E.FAKE_ERROR);
-    if (stopped.has(name)) throw new Error("This application session has been explicitly stopped by the user for this turn. Stop your work and send a final message noting they stopped the session and you're ready to continue if they want you to. Computer Use can be used again in the next assistant turn.");
+    if (stopped.has(name)) throw new Error(STOPPED);
     if (E.FAKE_BY_ID && !/^[a-z]+\.[a-z]+\./.test(name)) throw new Error("Computer Use server error -10010: Invalid app");
     await computer.get_app_state({ app: name, disableDiff: true });
     nodeRepl.write(`auto-emitted state for ${name}`); // real getApp emits state too

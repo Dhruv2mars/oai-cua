@@ -55,15 +55,18 @@ const ownStops = new Map();  // app name or bundle id → turn of its stop_app
 const userStops = new Map(); // app → engine start (engine.starts) it was seen on
 const appKey = (a) => String(a).trim().toLowerCase();
 const userStopLive = () => engine.running && [...userStops.values()].includes(engine.starts);
-// For a call that failed because of a stop: the app it failed on and whether
-// it may be retried (nothing ran yet). null when it didn't fail on a stop.
-function stopFailure(name, args, r) {
-  let fail;
-  if (r.isError) fail = { step: 1, error: r.content[0]?.text };
-  else try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail; } catch {}
-  if (diagnose(fail?.error)?.kind !== "user-stopped") return null;
-  if (name !== "batch") return { app: args.app, retry: true };
-  return { app: args.steps[fail.step - 1]?.args?.app ?? args.app, retry: fail.step === 1 }; // never re-run steps that ran
+// What a result says about app sessions: the apps whose session opened, and,
+// if the call failed on a stop, that app and whether the failure came while
+// opening it (before anything ran, so a retry is safe).
+function sessions(name, args, r) {
+  const apps = name === "batch" ? args.steps.map((s) => s?.args?.app ?? args.app) : [args.app];
+  let fail = null;
+  if (r.isError) fail = { step: 1, error: r.content[0]?.text, opened: r.content.some((c) => c.type === "text" && c.text?.includes(OPENED)) };
+  else try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail ?? null; } catch {}
+  if (fail && name !== "batch" && !r.isError) fail.opened = true; // a single action's own failure
+  const ok = fail ? [...apps.slice(0, fail.step - 1), ...(fail.opened ? [apps[fail.step - 1]] : [])] : apps;
+  const stop = fail && diagnose(fail.error)?.kind === "user-stopped" ? { app: apps[fail.step - 1], retry: fail.step === 1 && !fail.opened } : null;
+  return { ok, stop };
 }
 
 const engine = new Engine({
@@ -78,6 +81,7 @@ const engine = new Engine({
 const browser = new HeliumBrowser({ log });
 const browserTools = () => BROWSER_TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: true } }));
 const MARK = `⟦oai-cua:${randomUUID()}⟧`;
+const OPENED = `⟦oai-cua-opened:${randomUUID()}⟧`; // see buildCell
 const START = `⟦oai-cua-start:${randomUUID()}⟧`; // anything before it is REPL bootstrap output
 
 // MCP audio content exists from protocol 2025-03-26 on.
@@ -190,7 +194,7 @@ async function execute(name, args, signal) {
   if (name === "run_cua_js") observations.forget();
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
   const p = plan(name, args);
-  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, p);
+  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, { ...p, opened: OPENED });
   const apps = targetApps(name, args);
   for (let attempt = 0, recycled = false; ; attempt++) {
     try {
@@ -199,10 +203,11 @@ async function execute(name, args, signal) {
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
       if (name === "run_cua_js") ownStops.clear(); // a script may have opened sessions the user can stop
       else if (apps.length && name !== "stop_app") {
-        const stop = stopFailure(name, args, r), k = stop ? appKey(stop.app) : "";
-        if (!stop) for (const a of apps) { ownStops.delete(appKey(a)); userStops.delete(appKey(a)); }
-        else if (!(ownStops.get(k) < turn.n)) userStops.set(k, engine.starts);
-        else if (stop.retry && !recycled && !engine.recording && !userStopLive()) {
+        const { ok, stop } = sessions(name, args, r), k = stop ? appKey(stop.app) : "";
+        for (const a of ok) if (appKey(a) !== k) { ownStops.delete(appKey(a)); userStops.delete(appKey(a)); } // a session opened: no stop in effect
+        const ours = stop?.retry && ownStops.get(k) < turn.n;
+        if (stop && !ours) { ownStops.delete(k); userStops.set(k, engine.starts); } // the user's
+        else if (ours && !recycled && !engine.recording && !userStopLive()) {
           ownStops.delete(k); // once per stop_app
           log(`${stop.app} still stopped by an earlier turn's stop_app; restarting the engine`);
           recycled = true;

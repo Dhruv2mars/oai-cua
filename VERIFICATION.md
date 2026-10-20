@@ -766,4 +766,13 @@ skipped while any user stop is live on the engine; `run_cua_js` drops
 parentheses) create records; the SDK-host check is `sdk-ts`/`sdk-py` only.
 Two more tests, each failing on the round-2 code.
 
-`bun run check`: 98 pass, 0 fail.
+A third round found that a user stop landing during the first action after
+`stop_app` could still be undone (and the action re-run), and that a batch
+failing early cleared user-stop records for apps it never reached. Fixed:
+cells write a per-session random "opened" sentinel once the app's session is
+open (batch steps report `opened`), and only a stop that failed while opening
+the app is retried; stop records are cleared only for apps whose session
+actually opened. Live: the sentinel never appears in any result. Two more
+tests, each failing on the round-3 code.
+
+`bun run check`: 100 pass, 0 fail.

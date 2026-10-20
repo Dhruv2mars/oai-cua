@@ -247,6 +247,28 @@ describe("stop, takeover and turns", () => {
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
   });
 
+  test("a user stop during the first action after stop_app is honoured, and the action not re-run", async () => {
+    const sb = sandbox({ FAKE_STOP_ON_ACTION: "TextEdit" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" });
+    const r = await s.call("press_key", { app: "TextEdit", key: "a" }); // opens fine, the user stops it mid-action
+    expect(textOf(r)).toContain("The user stopped Computer Use");
+    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1);
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
+  test("a user stop stays on record when a batch fails before reaching that app", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", FAKE_USER_STOP: "Notes", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user stopped Computer Use");
+    await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "FAIL" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
+    await s.call("get_app_state", { app: "Mail" });
+    await s.call("stop_app", { app: "Mail" }); // ours, sticky
+    expect((await s.call("get_app_state", { app: "Mail" })).isError).toBe(true); // Notes' stop is still live: no restart
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
   test("a stop_app record is dropped once run_cua_js runs", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
     await s.init();
