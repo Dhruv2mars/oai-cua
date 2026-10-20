@@ -15,7 +15,6 @@
 // ends don't clear it), as SkyComputerUseService sometimes does;
 // FAKE_USER_STOP: comma-separated apps the user stopped; only the first fake
 // process started for this FAKE_LOG sees them (a new engine is clean).
-// FAKE_STOP_ON_ACTION: comma-separated apps the user stops during an action.
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -75,7 +74,6 @@ const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
     if (args[0] === "FAIL") throw new Error(`fake ${method} failure`);
-    if ((E.FAKE_STOP_ON_ACTION || "").split(",").includes(name)) throw new Error(STOPPED);
     if (takeovers > 0) { takeovers--; throw new Error(`The user changed '${name}'. Re-query the latest state with \`get_app_state\` before sending more actions.`); }
     if (method === "click" && E.FAKE_AUDIO_ELICIT_ON_CLICK) await audioApproval().catch(() => {});
   };
@@ -94,7 +92,6 @@ globalThis.nodeRepl = {
     record({ ev: "rpc", service, msg });
     if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopped.add(msg.app.toLowerCase()).add(`com.example.${msg.app}`.toLowerCase());
     if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
-    if (msg.type === "turnEnded") return {};
     throw new Error(`unsupported cuabridge request: ${msg.type}`);
   },
   ...(E.NODE_REPL_ENABLE_AUDIO === "1" ? { emitAudio: async (url) => out.push({ type: "audio", mimeType: "audio/wav", data: url.slice(url.indexOf(",") + 1) }) } : {}),

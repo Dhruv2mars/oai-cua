@@ -164,7 +164,7 @@ describe("per-app approval", () => {
 });
 
 describe("stop, takeover and turns", () => {
-  test("every cell carries this session's turn; stop_app stops the app and ends the turn", async () => {
+  test("every cell carries this session's turn; stop_app stops the app, ends the turn and replaces the engine", async () => {
     const sb = sandbox(), s = startShim(sb);
     await s.init();
     expect(textOf(await s.call("stop_app", {}))).toBe("No app sessions to stop."); // engine not started for this
@@ -175,11 +175,10 @@ describe("stop, takeover and turns", () => {
     const ev = sb.events();
     expect(toolTurns(sb)).toEqual(["1", "1", "2"]);
     const thread = ev.find((e) => e.ev === "cell" && e.turn).turn.thread_id;
-    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([
-      { type: "stopApp", app: "TextEdit" },
-      { type: "turnEnded", threadID: thread, turnID: "1" },
-    ]);
+    // never the service's TurnEnded: it would block every other client
+    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "stopApp", app: "TextEdit" }]);
     expect(ev.find((e) => e.ev === "turn_ended").args).toEqual({ hook_event_name: "Stop", session_id: thread, turn_id: "1" });
+    expect(new Set(ev.map((e) => e.pid)).size).toBe(2); // list_apps ran on a fresh engine
   });
 
   test("stop_app without app stops every app used this session", async () => {
@@ -190,112 +189,47 @@ describe("stop, takeover and turns", () => {
     expect(textOf(await s.call("stop_app", {}))).toBe("Stopped TextEdit (com.example.TextEdit).\nStopped Notes (com.example.Notes).");
   });
 
-  test("a stop that outlives its turn gets a fresh engine and one retry", async () => {
+  test("a stop that the service keeps is gone after stop_app: the next call runs on a fresh engine", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "TextEdit" }); // ends turn 1
-    const r = await s.call("get_app_state", { app: "TextEdit" });
-    expect(r.isError).toBeUndefined();
-    expect(textOf(r)).toContain("Full accessibility tree of TextEdit");
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2); // one engine restart
-    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toContain("TextEdit still stopped by an earlier turn's stop_app; restarting the engine");
-  });
-
-  test("a user's stop is never overridden, even in a later turn", async () => {
-    const sb = sandbox({ FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
-    await s.init();
-    for (let i = 0; i < 2; i++) {
-      expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use for this app");
-      await sleep(400); // the turn ends
-    }
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart
-  });
-
-  test("the stale-stop restart happens once per stop_app, and never re-runs batch steps", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
-    await s.init();
-    await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("get_app_state", { app: "Notes" });
-    await s.call("stop_app", { app: "Notes" });
-    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
-    expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain("Batch stopped at step 2 of 2");
-    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1); // step 1 ran once
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
-  });
-
-  test("a bundle id matches a stop_app made by name", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
-    await s.init();
-    await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "TextEdit" }); // "Stopped TextEdit (com.example.TextEdit)."
+    await s.call("stop_app", { app: "TextEdit" });
     expect((await s.call("get_app_state", { app: "com.example.TextEdit" })).isError).toBeUndefined();
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
   });
 
-  test("a user stop on one app is never undone by the restart for another", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1", FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
+  test("a user stop is honoured for the rest of the turn and cleared when it ends; nothing is retried", async () => {
+    const sb = sandbox({ FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
     await s.init();
-    await s.call("get_app_state", { app: "Notes" });
-    await s.call("stop_app", { app: "Notes" });
-    // the failing step is TextEdit (the user's stop), not Notes (ours): no restart
-    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
-    expect(textOf(r)).toContain("Batch stopped at step 1 of 2");
-    // Notes alone would qualify, but the user's TextEdit stop is live on this engine
-    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user stopped Computer Use");
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+    for (let i = 0; i < 2; i++) expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).toContain("The user stopped Computer Use");
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart within the turn
+    await sleep(500); // the turn ends
+    expect((await s.call("press_key", { app: "TextEdit", key: "a" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1); // only the allowed one ran
   });
 
-  test("a user stop during the first action after stop_app is honoured, and the action not re-run", async () => {
-    const sb = sandbox({ FAKE_STOP_ON_ACTION: "TextEdit" }), s = startShim(sb);
+  test("a turn without a user stop keeps its engine", async () => {
+    const sb = sandbox({ OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "TextEdit" });
-    const r = await s.call("press_key", { app: "TextEdit", key: "a" }); // opens fine, the user stops it mid-action
-    expect(textOf(r)).toContain("The user stopped Computer Use");
-    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1);
+    await sleep(500);
+    await s.call("get_app_state", { app: "TextEdit" });
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
   });
 
-  test("a user stop stays on record when a batch fails before reaching that app", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1", FAKE_USER_STOP: "Notes", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
-    await s.init();
-    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user stopped Computer Use");
-    await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "FAIL" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
-    await s.call("get_app_state", { app: "Mail" });
-    await s.call("stop_app", { app: "Mail" }); // ours, sticky
-    expect((await s.call("get_app_state", { app: "Mail" })).isError).toBe(true); // Notes' stop is still live: no restart
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
-  });
-
-  test("stop_app under another spelling drops the cached session, so the stale stop is still recovered", async () => {
+  test("an audio recording keeps its engine; the stop is cleared once it ends", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "textedit" });
+    expect((await s.call("start_audio_recording", { max_duration_ms: 5000 })).isError).toBeUndefined();
+    await s.call("stop_app", { app: "TextEdit" });
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use"); // engine kept
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+    await s.call("stop_audio_recording");
+    await s.call("stop_app", { app: "Notes" }); // the next turn end can replace it now
     expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
-  });
-
-  test("a stop_app record is dropped once run_cua_js runs", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
-    await s.init();
-    await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "TextEdit" });
-    await s.call("run_cua_js", { code: "nodeRepl.write('x')" });
-    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBe(true);
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
-  });
-
-  test("no restart while an audio recording holds the engine", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
-    await s.init();
-    await s.call("get_app_state", { app: "TextEdit" });
-    await s.call("stop_app", { app: "TextEdit" });
-    expect((await s.call("start_audio_recording", { max_duration_ms: 5000 })).isError).toBeUndefined();
-    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use");
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
   });
 
   test("the turn ends after Claude goes quiet", async () => {
@@ -303,7 +237,8 @@ describe("stop, takeover and turns", () => {
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await sleep(500);
-    expect(sb.events().filter((e) => e.ev === "rpc").map((e) => e.msg.type)).toEqual(["turnEnded"]);
+    expect(sb.events().filter((e) => e.ev === "turn_ended").length).toBe(1);
+    expect(sb.events().filter((e) => e.ev === "rpc").length).toBe(0); // no service TurnEnded
     await s.call("get_app_state", { app: "TextEdit" });
     expect(toolTurns(sb)).toEqual(["1", "2"]);
   });

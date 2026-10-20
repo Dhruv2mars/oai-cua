@@ -27,46 +27,43 @@ const log = logger("shim.log");
 const approver = new Approver({ log }); // per-app approval (approval.mjs)
 const focus = new FocusGuard({ log });  // undoes focus theft by the target app (focus.mjs)
 
-// Turns. SkyComputerUseService scopes user stops to a turn and refuses late
-// calls from an ended turn. MCP has no turn boundary, so a turn ends when
-// Claude goes quiet (OAI_CUA_TURN_IDLE_MS, default 60s), when a call is
-// cancelled (the user interrupted Claude), or after stop_app.
+// Turns. Every cell carries this session's turn id. MCP has no turn
+// boundary, so a turn ends when Claude goes quiet (OAI_CUA_TURN_IDLE_MS,
+// default 60s), when a call is cancelled (the user interrupted Claude), or
+// after stop_app. A stop (the user's, or stop_app's) lasts until the
+// service's connection to this engine closes; the service's own turn-end
+// request would clear it but blocks every other client (see engine.endTurn).
+// So stop_app replaces the engine at once, and a turn in which the user's
+// stop was seen replaces it when the turn ends: the app works again in the
+// next turn, and nothing is ever retried.
 const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
-const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0 };
+const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0, stopped: false };
+let clearStops = false; // replace the engine when it can (a recording holds it)
 async function endTurn(why) {
   clearTimeout(turn.timer);
   if (!turn.used) return;
   const ended = { thread: turn.thread, turn: String(turn.n) };
   turn.n++;
   turn.used = false;
+  if (turn.stopped) clearStops = true;
+  turn.stopped = false;
   log(`turn ${ended.turn} ends: ${why}`);
   try { await engine.endTurn(ended); } catch (e) { log(`turn end failed: ${e.message}`); }
+  await releaseStops(`stops from turn ${ended.turn}`);
+}
+async function releaseStops(why) {
+  if (!clearStops || engine.recording) return;
+  clearStops = false;
+  observations.forget();
+  log(`replacing the engine to clear ${why}`);
+  await engine.recycle("clear stops");
 }
 
-// Stops made by stop_app last for the turn they happened in; the service
-// clears them when that turn ends, but sometimes keeps them until the engine's
-// connection closes. The user can only stop an app that has an active session,
-// and stop_app leaves none, so if the first use of that app in a later turn
-// still reports a stop, it is ours outliving its turn: the engine is replaced
-// once and the call retried. Stops the user makes are always honoured, so no
-// replacement happens while one is live on this engine (a new engine would
-// clear it too).
-const ownStops = new Map();  // app name or bundle id → turn of its stop_app
-const userStops = new Map(); // app → engine start (engine.starts) it was seen on
-const appKey = (a) => String(a).trim().toLowerCase();
-const userStopLive = () => engine.running && [...userStops.values()].includes(engine.starts);
-// What a result says about app sessions: the apps whose session opened, and,
-// if the call failed on a stop, that app and whether the failure came while
-// opening it (before anything ran, so a retry is safe).
-function sessions(name, args, r) {
-  const apps = name === "batch" ? args.steps.map((s) => s?.args?.app ?? args.app) : [args.app];
-  let fail = null;
-  if (r.isError) fail = { step: 1, error: r.content[0]?.text, opened: r.content.some((c) => c.type === "text" && c.text?.includes(OPENED)) };
-  else try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail ?? null; } catch {}
-  if (fail && name !== "batch" && !r.isError) fail.opened = true; // a single action's own failure
-  const ok = fail ? [...apps.slice(0, fail.step - 1), ...(fail.opened ? [apps[fail.step - 1]] : [])] : apps;
-  const stop = fail && diagnose(fail.error)?.kind === "user-stopped" ? { app: apps[fail.step - 1], retry: fail.step === 1 && !fail.opened } : null;
-  return { ok, stop };
+// Did the user's stop refuse this call?
+function userStopped(r) {
+  let msg = r.isError ? r.content[0]?.text : null;
+  if (!r.isError) try { msg = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail?.error; } catch {}
+  return diagnose(msg)?.kind === "user-stopped";
 }
 
 const engine = new Engine({
@@ -81,7 +78,6 @@ const engine = new Engine({
 const browser = new HeliumBrowser({ log });
 const browserTools = () => BROWSER_TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: true } }));
 const MARK = `⟦oai-cua:${randomUUID()}⟧`;
-const OPENED = `⟦oai-cua-opened:${randomUUID()}⟧`; // see buildCell
 const START = `⟦oai-cua-start:${randomUUID()}⟧`; // anything before it is REPL bootstrap output
 
 // MCP audio content exists from protocol 2025-03-26 on.
@@ -167,10 +163,9 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
-      const text = r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-      const stopped = [...text.matchAll(/^Stopped (.+?)(?: \(([^()]+)\))?\.$/gm)].flatMap((m) => [m[1], m[2]]);
-      if (stopped.length) for (const a of [args.app, ...stopped].filter(Boolean)) ownStops.set(appKey(a), turn.n);
+      clearStops = true;
       await endTurn("stop_app");
+      await releaseStops("stop_app"); // also when the turn had no other calls
     }
     return r;
   } finally {
@@ -194,28 +189,14 @@ async function execute(name, args, signal) {
   if (name === "run_cua_js") observations.forget();
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
   const p = plan(name, args);
-  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, { ...p, opened: OPENED });
+  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, p);
   const apps = targetApps(name, args);
-  for (let attempt = 0, recycled = false; ; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     try {
       const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
       const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
-      if (name === "run_cua_js") ownStops.clear(); // a script may have opened sessions the user can stop
-      else if (apps.length && name !== "stop_app") {
-        const { ok, stop } = sessions(name, args, r), k = stop ? appKey(stop.app) : "";
-        for (const a of ok) if (appKey(a) !== k) { ownStops.delete(appKey(a)); userStops.delete(appKey(a)); } // a session opened: no stop in effect
-        const ours = stop?.retry && ownStops.get(k) < turn.n;
-        if (stop && !ours) { ownStops.delete(k); userStops.set(k, engine.starts); } // the user's
-        else if (ours && !recycled && !engine.recording && !userStopLive()) {
-          ownStops.delete(k); // once per stop_app
-          log(`${stop.app} still stopped by an earlier turn's stop_app; restarting the engine`);
-          recycled = true;
-          observations.forget();
-          await engine.recycle("stale stop");
-          continue;
-        }
-      }
+      if (apps.length && userStopped(r)) turn.stopped = true;
       if (name === "run_cua_js") { // the script's own output and errors, as the REPL returned them
         if (!r.isError) return withDocs(extractOutput(r.content, MARK) ?? []);
         const out = extractOutput(r.content.slice(1), MARK) ?? [];
@@ -226,7 +207,7 @@ async function execute(name, args, signal) {
       if (name === "stop_audio_recording") engine.keepAliveUntil(0);
       if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
-        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").replaceAll(OPENED, "").slice(0, 1000).trim(); // REPL errors come first
+        const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").slice(0, 1000).trim(); // REPL errors come first
         return text(explain(msg || "computer-use action failed"), true);
       }
       if (!p.render) return withDocs(out);

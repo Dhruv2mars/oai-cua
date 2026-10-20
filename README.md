@@ -313,31 +313,31 @@ concurrently.
 
 ### Turns
 
-OpenAI's service scopes some state to a *turn*. A stop lasts until the turn
-ends. A late call from an ended turn is refused. MCP has no turn boundaries, so
+OpenAI's service scopes some state to a *turn*. MCP has no turn boundaries, so
 every call carries this session's turn id, and the shim ends the turn when one
 of these happens:
 
 - Claude makes no calls for `OAI_CUA_TURN_IDLE_MS` (default 60000; 0 disables
   this).
 - A call is cancelled, for example because you interrupted Claude.
-- `stop_app` runs. The app is then released without staying blocked.
+- `stop_app` runs.
 
-The service sometimes keeps a `stop_app` stop after its turn has ended,
-until the engine's connection closes. You can only stop an app that has an
-active session, and `stop_app` leaves none. So if the first use of that app
-in a later turn still reports a stop, it's the shim's own. The shim then
-starts a fresh engine and retries the call once (by app name or bundle id).
-It never does this for a batch whose earlier steps already ran, while an
-audio recording is running, while a stop you made on any app is still in
-effect (a new engine would clear that too), or after `run_cua_js` (a script
-may have opened sessions you could stop). Stops you make are always honoured.
+At turn end the shim calls cua-repl's `turn_ended` lifecycle tool. It does
+**not** send the service's own turn-ended request: while the engine that sent
+it is alive, the service refuses *every other* client with "the current turn
+ended", so two Claude sessions would block each other for minutes.
 
-At turn end, the shim sends the service's turn-ended request through a small
-trusted `node_repl` service of its own (`src/bridge-service.mjs`). That
-service loads OpenAI's IPC client from the installed app at runtime, and only
-allows resolve, stop-app and turn-ended requests. The shim also calls cua-repl's
-`turn_ended` lifecycle tool. The next call starts a new turn.
+A stop (yours from the menu bar, or `stop_app`'s) lasts until the service's
+connection to the engine closes. So `stop_app` replaces the engine at once,
+and the app is released without staying blocked. A stop of yours is honoured
+for the rest of the turn; when that turn ends, the engine is replaced and the
+app works again in the next turn. Nothing is retried. While an audio
+recording is running the engine is kept, and the replacement waits for the
+next turn end after it.
+
+Stopping and resolving apps go through a small trusted `node_repl` service of
+the shim's own (`src/bridge-service.mjs`). It loads OpenAI's IPC client from
+the installed app at runtime and only allows resolve and stop-app requests.
 
 ## Development
 
@@ -387,11 +387,10 @@ rest are for development (the pre-rename `OPENAI_CUA_*` names are still read for
   gate. Use `prompt` or `deny-unknown` for a per-app gate in headless use.
 - `stop_app` and a stop from ChatGPT's menu bar are service-wide. They also end
   that app's sessions for other clients using it at the same moment.
-- A stop made by *another* client lasts until that client's engine exits. A
-  turn end here doesn't clear it.
+- A stop made by *another* client lasts until that client's engine exits.
+  Replacing this shim's engine doesn't clear it.
 - `run_cua_js` scripts can call the bridge's trusted service too. It only
-  offers resolve, stop-app and turn-ended; none of them can answer an
-  approval.
+  offers resolve and stop-app; neither can answer an approval.
 
 Measured results are in [VERIFICATION.md](VERIFICATION.md). The v0.1 audit is
 in [AUDIT.md](AUDIT.md).

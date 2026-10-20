@@ -234,9 +234,6 @@ const treeShot = (a) => `(({ state, screenshot }) => ({ tree: state, shot: scree
 //   get_app_state: opts.capture is "tree" | "tree+shot" | "shot"
 //   batch: opts.steps from batchSteps()
 export function buildCell(name, args, mark, opts = {}) {
-  // Written once the app's session is open, so a failed call shows whether
-  // it failed opening the app or later (e.g. a stop during the action).
-  const opened = opts.opened ? `nodeRepl.write(${JSON.stringify(opts.opened)});\n` : "";
   const M = JSON.stringify(mark);
   if (name === "run_cua_js") return `{${PRELUDE}\n}\nnodeRepl.write(${M});\n${args.code}`;
   const head = `{\nconst A = ${JSON.stringify(prep(args))};${PRELUDE}\n`;
@@ -249,7 +246,7 @@ nodeRepl.write(${M} + apps.map((x) => [x.displayName ?? x.id, "—", x.id, x.isR
     return head + `const C = ${JSON.stringify(opts.capture ?? "tree+shot")};
 const obs = async (a) => C === "shot" ? { shot: await a.getScreenshot({ emit: false }) } : C === "tree" ? { tree: ${tree("a")} } : ${treeShot("a")};
 let a = await __cb.app(A.app), r;
-${opened}try { r = await obs(a); } catch { a = await __cb.app(A.app, true); r = await obs(a); }
+try { r = await obs(a); } catch { a = await __cb.app(A.app, true); r = await obs(a); }
 nodeRepl.write(${M} + JSON.stringify({ tree: r.tree ?? null, shot: !!r.shot }));
 if (r.shot) await nodeRepl.emitImage(r.shot);
 }`;
@@ -296,16 +293,14 @@ let ran = 0, fail = null, note = null;
 const touched = [];
 for (let i = 0; i < STEPS.length; i++) {
   const { tool, args: A } = STEPS[i];
-  let opened = false;
   try {
     const a = await __cb.app(A.app);
-    opened = true;
     if (!touched.includes(A.app)) touched.push(A.app);
     switch (tool) {
 ${[...new Set(opts.steps.map((s) => s.tool))].map((t) => `      case ${JSON.stringify(t)}: { ${ACTIONS[t]} break; }`).join("\n")}
     }
     ran++;
-  } catch (e) { fail = { step: i + 1, tool, error: String(e?.message ?? e), opened }; break; }
+  } catch (e) { fail = { step: i + 1, tool, error: String(e?.message ?? e) }; break; }
 }
 ${after}const states = [];
 for (const app of touched) states.push(await after(app));
@@ -332,7 +327,7 @@ nodeRepl.write(${M} + (lines.join("\\n") || "No app sessions to stop."));
   // If the user changed the app under the action: keyboard actions refresh the
   // state and retry once; others report it (fail) along with the fresh state.
   return head + `const a = await __cb.app(A.app);
-${opened}let ran = 0, fail = null, note = null;
+let ran = 0, fail = null, note = null;
 const act = async () => { ${ACTIONS[name]} };
 try { await act(); ran = 1; }
 catch (e) {

@@ -249,20 +249,17 @@ export class Engine {
     return inst.gone;
   }
 
-  // Tells the live engine that a turn ended (no-op when none runs), as that
-  // turn: SkyComputerUseService then clears per-turn stops and refuses late
-  // calls carrying it; trusted libraries also get cua-repl's turn_ended.
+  // Tells cua-repl's trusted libraries that a turn ended (no-op when no engine
+  // runs). The service's own TurnEnded request is deliberately not sent: it
+  // makes the service refuse every other client ("the current turn ended")
+  // until this engine exits. Stops are cleared by replacing the engine instead.
   async endTurn({ thread, turn }) {
     const inst = this.cur;
     if (!inst || inst.dead || inst.retired) return false;
-    const code = `await nodeRepl.rpc("cuabridge", ${JSON.stringify({ type: "turnEnded", threadID: thread, turnID: turn })});`;
-    const results = await Promise.allSettled([
-      this.run(code, 10000, undefined, { meta: { session_id: thread, thread_id: thread, turn_id: turn } }).then((r) => ({ result: r })),
-      inst.ready.then(() => this.#request(inst, "tools/call", { name: "turn_ended", arguments: { hook_event_name: "Stop", session_id: thread, turn_id: turn } }, 10000)),
-    ]);
-    const bad = results.map((r) => r.status === "rejected" ? r.reason.message : r.value.error?.message || (r.value.result?.isError && r.value.result.content?.[0]?.text)).filter(Boolean);
-    this.log(`engine#${inst.id} turn ${turn} ended${bad.length ? ` (${bad.join("; ").slice(0, 300)})` : ""}`);
-    return !bad.length;
+    const r = await inst.ready.then(() => this.#request(inst, "tools/call", { name: "turn_ended", arguments: { hook_event_name: "Stop", session_id: thread, turn_id: turn } }, 10000)).catch((e) => ({ error: e }));
+    const bad = r.error?.message || (r.result?.isError && r.result.content?.[0]?.text);
+    this.log(`engine#${inst.id} turn ${turn} ended${bad ? ` (${String(bad).slice(0, 300)})` : ""}`);
+    return !bad;
   }
 
   // Replaces the engine after the cells queued so far, without cancelling any
