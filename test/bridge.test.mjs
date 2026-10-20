@@ -1,6 +1,7 @@
 // Regression tests: real shim + engine processes against a fake cua-repl.
 // Run with `bun run check` (bun test runner; the shim itself runs on Node).
 import { afterEach, describe, expect, test } from "bun:test";
+import { diffTree, limitOutput } from "../src/observe.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -59,6 +60,7 @@ function fakeInstall(sb) {
   put(".codex/plugins/cache/openai-bundled/computer-use/1.10.0/skills/computer-use/SKILL.md", "CODEX-SKILL");
   put(".codex/plugins/cache/openai-bundled/computer-use/1.10.0/.codex-plugin/plugin.json", '{"name":"computer-use"}');
 }
+const FULL = "Full accessibility tree of TextEdit:\ntree of TextEdit é日";
 const textOf = (r) => r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 const spawns = (sb) => sb.events().filter((e) => e.ev === "spawn");
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -70,7 +72,7 @@ describe("protocol", () => {
     expect(init.protocolVersion).toBe("2025-06-18");
     expect(init.instructions).toContain("get_app_state");
     const tools = (await s.rpc("tools/list", {})).result.tools;
-    expect(tools.map((t) => t.name).filter((n) => !n.startsWith("browser_")).sort()).toEqual(["click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
+    expect(tools.map((t) => t.name).filter((n) => !n.startsWith("browser_")).sort()).toEqual(["batch", "click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
     for (const t of tools) expect(t.inputSchema.properties).toBeDefined();
     for (const t of tools) expect(Object.keys(t).sort()).toEqual(["annotations", "description", "inputSchema", "name"]);
     for (const n of ["click", "type_text", "paste", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"])
@@ -101,7 +103,7 @@ describe("tools", () => {
     await s.init();
     const r = await s.call("get_app_state", { app: "TextEdit" });
     expect(r.isError).toBeUndefined();
-    expect(textOf(r)).toBe("tree of TextEdit é日");
+    expect(textOf(r)).toBe(FULL);
     expect(r.content[1]).toEqual({ type: "image", mimeType: "image/jpeg", data: "/9j/4A==" });
     const ev = spawns(sb)[0];
     expect(ev.surfaces).toBe("computer");
@@ -115,7 +117,7 @@ describe("tools", () => {
     await s.call("click", { app: "TextEdit", x: 10, y: 20, click_count: 2, mouse_button: "right" });
     await s.call("type_text", { app: "TextEdit", text: "plain" });
     const r = await s.call("type_text", { app: "TextEdit", text: "é日 \"quote\" ${x} `t`" });
-    expect(textOf(r)).toContain("state of TextEdit é日");
+    expect(textOf(r)).toBe(`Done. ${"No change in the accessibility tree since your last observation of TextEdit; all element indices are still valid."}`);
     await s.call("scroll", { app: "TextEdit", element_index: 1, direction: "down", pages: 0.5 });
     await s.call("select_text", { app: "TextEdit", element_index: 2, text: "a", selection: "cursor_after" });
     const acts = sb.events().filter((e) => e.ev === "action").map((e) => [e.method, e.args]);
@@ -170,7 +172,7 @@ describe("tools", () => {
     for (const [tool, args] of [["click", { x: 1, y: 2 }], ["press_key", { key: "Tab" }], ["paste", { text: "x" }], ["scroll", { element_index: 1, direction: "up" }]]) {
       const r = await s.call(tool, { app: "TextEdit", ...args, screenshot: true });
       expect(r.content.map((c) => c.type)).toEqual(["text", "image"]);
-      expect(textOf(r)).toContain("tree of TextEdit é日");
+      expect(textOf(r)).toMatch(/^Done\. (Full accessibility tree of TextEdit:\ntree of TextEdit é日|No change in the accessibility tree)/);
       expect(r.content[1]).toEqual({ type: "image", mimeType: "image/jpeg", data: "/9j/4A==" });
     }
   });
@@ -260,7 +262,7 @@ describe("tools", () => {
   test("UTF-8 split across stream chunks is decoded intact", async () => {
     const sb = sandbox({ FAKE_SPLIT: "1" }), s = startShim(sb);
     await s.init();
-    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe("tree of TextEdit é日");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe(FULL);
   });
 });
 
@@ -312,8 +314,8 @@ describe("guidance", () => {
     expect(r1.content.at(-1).type).toBe("image");
     expect(textOf(r1)).toContain("tree of TextEdit é日");
     const r2 = await s.call("get_app_state", { app: "TextEdit" });
-    expect(textOf(r2)).toBe("tree of TextEdit é日"); // REPL "declared with const" warnings are not docs
-    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe("tree of TextEdit é日");
+    expect(textOf(r2)).toBe("No change in the accessibility tree since your last observation of TextEdit; all element indices are still valid."); // REPL "declared with const" warnings are not docs
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit", mode: "text" }))).toBe(FULL); // docs only once
     expect((await s.rpc("resources/read", { uri: "openai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
   });
 
@@ -323,6 +325,213 @@ describe("guidance", () => {
     const r1 = await s.call("press_key", { app: "TextEdit", key: "a" });
     expect(r1.content[0].text).toContain("RESET-DOCS");
     expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).not.toContain("RESET-DOCS");
+  });
+});
+
+describe("observation", () => {
+  const REST = Array.from({ length: 20 }, (_, i) => `\n\t\t${i + 2} button Action ${i}`).join("");
+  const T1 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello${REST}`;
+  const T2 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello world\nsecond line${REST}`;
+  const treeSb = (env = {}) => {
+    const sb = sandbox(env);
+    const file = path.join(sb.dir, "trees.json");
+    sb.env.FAKE_TREE_FILE = file;
+    sb.setTree = (t) => fs.writeFileSync(file, JSON.stringify({ TextEdit: t }));
+    return sb;
+  };
+
+  test("diffTree: changed lines under their ancestors; null for window switch or large change", () => {
+    expect(diffTree(T1, T1)).toBe("");
+    // a multi-line value is shown whole, with its element line
+    expect(diffTree(T1, T2)).toBe('  Window: "doc"\n  \t0 standard window doc\n- \t\t1 text area Value: hello\n+ \t\t1 text area Value: hello world\n+ second line');
+    // only the changed lines of an otherwise unchanged multi-line value
+    const M = (x) => T1.replace("Value: hello", `Value: l1\nl2\n${x}\nl4`);
+    expect(diffTree(M("l3"), M("l3!"))).toBe('  Window: "doc"\n  \t0 standard window doc\n  \t\t1 text area Value: l1\n  …\n- l3\n+ l3!\n  …');
+    expect(diffTree(T1, T1.replace('"doc"', '"other"'))).toBeNull(); // window switch
+    expect(diffTree(T1, T1.replaceAll("Action", "Other"))).toBeNull(); // diff not smaller
+  });
+
+  test("auto mode: first observation full + screenshot, then labelled diffs; engine diffs never used", async () => {
+    const sb = treeSb(), s = startShim(sb);
+    await s.init();
+    sb.setTree(T1);
+    const first = await s.call("get_app_state", { app: "TextEdit" });
+    expect(textOf(first)).toBe(`Full accessibility tree of TextEdit:\n${T1}`);
+    expect(first.content[1].type).toBe("image");
+    const same = await s.call("get_app_state", { app: "TextEdit" });
+    expect(textOf(same)).toContain("No change in the accessibility tree");
+    expect(same.content.length).toBe(1); // diff mode: no screenshot
+    sb.setTree(T2);
+    const act = await s.call("type_text", { app: "TextEdit", text: " world" });
+    expect(textOf(act)).toStartWith("Done. Accessibility diff since your last observation of TextEdit");
+    expect(textOf(act)).toContain("+ \t\t1 text area Value: hello world\n+ second line");
+    expect(textOf(act)).not.toContain("button Action"); // unchanged elements omitted
+    const obs = sb.events().filter((e) => e.ev === "observe" && e.kind !== "shot");
+    expect(obs.length).toBe(3);
+    expect(obs.every((e) => e.disableDiffing && e.emit === false)).toBe(true);
+    expect(JSON.stringify(sb.events())).not.toContain("ENGINE DIFF");
+  });
+
+  test("explicit modes: full, text, diff, screenshot (forces the next tree to be full)", async () => {
+    const sb = treeSb(), s = startShim(sb);
+    await s.init();
+    sb.setTree(T1);
+    const diff0 = await s.call("get_app_state", { app: "TextEdit", mode: "diff" }); // nothing seen yet → full
+    expect(textOf(diff0)).toStartWith("Full accessibility tree");
+    expect(diff0.content.length).toBe(1);
+    const text = await s.call("get_app_state", { app: "TextEdit", mode: "text" });
+    expect(textOf(text)).toBe(`Full accessibility tree of TextEdit:\n${T1}`);
+    expect(text.content.length).toBe(1);
+    const full = await s.call("get_app_state", { app: "TextEdit", mode: "full" });
+    expect(textOf(full)).toStartWith("Full accessibility tree");
+    expect(full.content[1].type).toBe("image");
+    const shot = await s.call("get_app_state", { app: "TextEdit", mode: "screenshot" });
+    expect(textOf(shot)).toContain("No accessibility tree was read");
+    expect(shot.content[1].type).toBe("image");
+    const after = await s.call("get_app_state", { app: "TextEdit" });
+    expect(textOf(after)).toStartWith("Full accessibility tree"); // not a diff after screenshot-only
+    expect(after.content[1].type).toBe("image");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit", mode: "bogus" }))).toContain("mode must be one of");
+  });
+
+  test("full mode notes a missing screenshot", async () => {
+    const sb = treeSb({ FAKE_NO_SHOT: "1" }), s = startShim(sb);
+    await s.init();
+    const r = await s.call("get_app_state", { app: "TextEdit" });
+    expect(r.isError).toBeUndefined();
+    expect(textOf(r)).toEndWith("(No screenshot is available for this window.)");
+  });
+
+  test("output is capped near 25k tokens, keeping head and tail", () => {
+    const big = "a".repeat(150_000) + "TAIL";
+    const out = limitOutput([{ type: "text", text: big }, ...Array.from({ length: 10 }, () => ({ type: "image", data: "x" }))]);
+    const txt = out.filter((c) => c.type === "text").map((c) => c.text).join("");
+    expect(txt.length).toBeLessThan(101_000);
+    expect(txt).toContain("characters truncated");
+    expect(txt).toContain("TAIL");
+    expect(out.at(-1).text).toBe("[2 more image(s) dropped: at most 8 images per call]");
+    expect(out.filter((c) => c.type === "image").length).toBe(8);
+  });
+});
+
+describe("batch", () => {
+  test("runs steps in one cell with one state read, defaulting the app", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    const r = await s.call("batch", { app: "TextEdit", steps: [
+      { tool: "click", args: { element_index: 3 } },
+      { tool: "type_text", args: { text: "hi ${x}`" } },
+      { tool: "press_key", args: { key: "Return" } },
+    ] });
+    expect(r.isError).toBeUndefined();
+    expect(textOf(r)).toBe(`Batch completed: all 3 steps ran.\n\n${FULL}`);
+    expect(sb.events().filter((e) => e.ev === "action").map((e) => [e.method, e.args[0]])).toEqual([["click", 3], ["typeText", "hi ${x}`"], ["pressKey", "Return"]]);
+    expect(sb.events().filter((e) => e.ev === "cell" && !e.code.includes("getState")).length).toBe(1); // + the handshake cell
+    expect(sb.events().filter((e) => e.ev === "observe").length).toBe(1);
+  });
+
+  test("screenshot is a batch option: one image per app after the last step", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("batch", { app: "TextEdit", steps: [{ tool: "click", args: { element_index: 1, screenshot: true } }] }))).toContain("screenshot is a batch option");
+    const r = await s.call("batch", { app: "TextEdit", screenshot: true, steps: [{ tool: "press_key", args: { key: "cmd+a" } }, { tool: "press_key", args: { key: "Tab" } }] });
+    expect(r.content.map((c) => c.type)).toEqual(["text", "image"]);
+    expect(sb.events().filter((e) => e.ev === "action").map((e) => e.args[0])).toEqual(["super+a", "Tab"]); // chords normalized per step
+    expect(sb.events().filter((e) => e.ev === "observe").map((e) => [e.kind, e.disableDiffing])).toEqual([["tree+shot", true]]);
+  });
+
+  test("stops at the first failing step and reports it with the state", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    const r = await s.call("batch", { steps: [
+      { tool: "press_key", args: { app: "TextEdit", key: "a" } },
+      { tool: "press_key", args: { app: "TextEdit", key: "FAIL" } },
+      { tool: "press_key", args: { app: "TextEdit", key: "never" } },
+    ] });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toStartWith("Batch stopped at step 2 of 3 (press_key): fake pressKey failure\nSteps 1-1 completed; steps 3-3 were not run.");
+    expect(textOf(r)).toContain(FULL);
+    expect(sb.events().filter((e) => e.ev === "action").map((e) => e.args[0])).toEqual(["a", "FAIL"]);
+  });
+
+  test("every step is validated before anything runs", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    await s.init();
+    const bad = async (steps, msg, extra = {}) => expect(textOf(await s.call("batch", { steps, ...extra }))).toContain(msg);
+    await bad([{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "click", args: { app: "TextEdit" } }], "step 2 (click): click needs element_index or both x and y");
+    await bad([{ tool: "press_key", args: { key: "a" } }], "step 1 (press_key): missing required argument: app");
+    await bad([{ tool: "get_app_state", args: { app: "TextEdit" } }], "tool must be one of");
+    await bad([{ tool: "batch", args: {} }], "tool must be one of");
+    await bad([{ tool: "click", args: { app: "Google Chrome", element_index: 1 } }], "blocked");
+    await bad([{ tool: "click", args: { element_index: 1 }, code: "x" }], "unknown key: code");
+    await bad([{ tool: "press_key", args: { key: "a" } }], "blocked", { app: "Chrome" });
+    await bad([], "steps must have 1-50 entries");
+    expect(spawns(sb).length).toBe(0);
+  });
+});
+
+describe("run_cua_js", () => {
+  const jsSb = (env = {}) => sandbox({ OPENAI_CUA_ENABLE_JS: "1", ...env });
+
+  test("disabled by default: not listed, refused with how to enable", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    const init = (await s.init()).result;
+    expect(init.instructions).not.toContain("run_cua_js");
+    const names = (await s.rpc("tools/list", {})).result.tools.map((t) => t.name);
+    expect(names).not.toContain("run_cua_js");
+    expect(names).not.toContain("reset_repl");
+    expect(textOf(await s.call("run_cua_js", { code: "1" }))).toContain("OPENAI_CUA_ENABLE_JS=1");
+    expect(textOf(await s.call("reset_repl", {}))).toContain("disabled");
+    expect(spawns(sb).length).toBe(0);
+  });
+
+  test("bindings persist across calls, bridge cells leak none, reset_repl clears them", async () => {
+    const sb = jsSb(), s = startShim(sb);
+    const init = (await s.init()).result;
+    expect(init.instructions).toContain("run_cua_js");
+    expect((await s.rpc("tools/list", {})).result.tools.map((t) => t.name)).toContain("run_cua_js");
+    expect((await s.call("run_cua_js", { code: "globalThis.counter = 41; globalThis.A = 'mine';" })).isError).toBeUndefined();
+    await s.call("get_app_state", { app: "TextEdit" }); // bridge cell must not clobber A
+    const r = await s.call("run_cua_js", { code: "counter++; nodeRepl.write(`${counter} ${A}`); const app = await cua.getApp('TextEdit'); await app.pressKey('x');" });
+    expect(textOf(r)).toBe("42 mine\nauto-emitted state for TextEdit"); // getApp displays state, as in Codex
+    expect(sb.events().some((e) => e.ev === "action" && e.args[0] === "x")).toBe(true);
+    expect(textOf(await s.call("reset_repl", {}))).toContain("REPL reset");
+    expect(sb.events().some((e) => e.ev === "js_reset")).toBe(true);
+    expect(textOf(await s.call("run_cua_js", { code: "nodeRepl.write(typeof counter)" }))).toBe("undefined");
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined(); // bridge works after reset
+  });
+
+  test("script errors are reported with the output so far", async () => {
+    const sb = jsSb(), s = startShim(sb);
+    await s.init();
+    const r = await s.call("run_cua_js", { code: "nodeRepl.write('before'); throw new Error('boom')" });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("boom\nbefore");
+  });
+
+  test("Chrome stays blocked: static check, and approval declined by resolved identity even via cua.computer", async () => {
+    const sb = jsSb({ FAKE_ELICIT: "1" }), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("run_cua_js", { code: "await cua.getApp('Google Chrome')" }))).toContain("blocked");
+    expect(spawns(sb).length).toBe(0);
+    for (const code of ["await cua.computer.get_app_state({ app: '/tmp/browser-link' })", "await cua.getApp('/tmp/browser-link')"]) { // names hide Chrome
+      const r = await s.call("run_cua_js", { code });
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toContain("not approved");
+    }
+    await s.call("reset_repl", {});
+    expect((await s.call("run_cua_js", { code: "await cua.computer.get_app_state({ app: '/tmp/browser-link' })" })).isError).toBe(true);
+    expect(sb.events().filter((e) => e.ev === "elicit").map((e) => e.action)).toEqual(["decline", "decline", "decline"]);
+    expect(sb.events().filter((e) => e.ev === "computer")).toEqual([]);
+  });
+
+  test("large script output is truncated", async () => {
+    const sb = jsSb(), s = startShim(sb);
+    await s.init();
+    const r = await s.call("run_cua_js", { code: "nodeRepl.write('x'.repeat(300000) + 'END')" });
+    expect(textOf(r).length).toBeLessThan(101_000);
+    expect(textOf(r)).toContain("characters truncated");
+    expect(textOf(r)).toContain("END");
   });
 });
 
@@ -376,7 +585,7 @@ describe("lifecycle", () => {
     const r = await s.call("get_app_state", { app: "TextEdit" }); // old exits mid-call
     expect(alive(old)).toBe(false);
     expect(r.isError).toBeUndefined();
-    expect(textOf(r)).toBe("tree of TextEdit é日");
+    expect(textOf(r)).toBe(FULL);
     expect((await s.call("list_apps")).isError).toBeUndefined(); // still served by the replacement
     expect(spawns(sb).length).toBe(2);
   });
@@ -385,7 +594,7 @@ describe("lifecycle", () => {
     const sb = sandbox({ FAKE_CRASH_ONCE: path.join(os.tmpdir(), `crash-${process.pid}-${Date.now()}`) });
     const s = startShim(sb);
     await s.init();
-    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe("tree of TextEdit é日");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe(FULL);
     const sb2 = sandbox({ FAKE_CRASH_ONCE: path.join(os.tmpdir(), `crash2-${process.pid}-${Date.now()}`) });
     const s2 = startShim(sb2);
     await s2.init();
@@ -548,5 +757,23 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     const adds = calls().filter((c) => c.a[1] === "add-json");
     expect(JSON.parse(adds.at(-1).a[5])).toEqual(old);
     expect(fs.readFileSync(path.join(cfg, "settings.json"), "utf8")).toBe("{}");
+  });
+  test("--enable-js opts in, a later plain install keeps it, --disable-js removes it", () => {
+    const sb = sandbox();
+    const { bin, calls } = fakeBin(sb);
+    const cfg = path.join(sb.dir, "claude-cfg");
+    fs.mkdirSync(cfg);
+    fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
+    const install = (...flags) => {
+      const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live", ...flags], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
+      expect(r.status).toBe(0);
+      const spec = JSON.parse(calls().filter((c) => c.a[1] === "add-json").at(-1).a[5]);
+      fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "openai-computer-use": spec } }));
+      return spec.env.OPENAI_CUA_ENABLE_JS;
+    };
+    expect(install()).toBeUndefined();
+    expect(install("--enable-js")).toBe("1");
+    expect(install()).toBe("1");
+    expect(install("--disable-js")).toBeUndefined();
   });
 });

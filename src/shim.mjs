@@ -9,14 +9,15 @@ import { BROWSER_TOOLS, HeliumBrowser, discoverEndpoints, isBrowserTool, verifyE
 import { Engine, EngineError } from "./engine.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
+import { Observations, limitOutput } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
-import { TOOL_NAMES, buildCell, extractOutput, isReadOnly, publicTools, validate } from "./tools.mjs";
+import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, publicTools, validate } from "./tools.mjs";
 
 const VERSION = "0.2.0";
 const PROTOCOLS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 // OpenAI's guidance, read once at startup from the installed app (see guidance.mjs).
 const DOCS = discover();
-const INSTRUCTIONS = buildInstructions(DOCS);
+const INSTRUCTIONS = buildInstructions(DOCS, { tools: TOOL_NAMES });
 const firstUse = new FirstUse(DOCS, [...TOOL_NAMES]);
 
 const log = logger("shim.log");
@@ -56,17 +57,70 @@ const service = createService({
 
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 
+const observations = new Observations(); // what Claude has seen of each app, for diffs
+
+// Tool → how its cell captures state, and how the cell's JSON payload is rendered.
+const ACTION_RESULT = new Set(BATCHABLE);
+const stateText = (s) => (s.tree != null ? observations.render(s.app, s.tree) : `(State of ${s.app} unavailable: ${s.error})`);
+const missingShot = (p) => p.states?.some((s) => s.tree != null && !s.shot) ? "\n(screenshot unavailable)" : "";
+function plan(name, args) {
+  if (name === "get_app_state") {
+    const mode = !args.mode || args.mode === "auto" ? (observations.has(args.app) ? "diff" : "full") : args.mode;
+    const capture = mode === "full" ? "tree+shot" : mode === "screenshot" ? "shot" : "tree";
+    return { capture, render: (p) => {
+      if (mode === "screenshot") {
+        observations.forget(args.app); // indices may have moved unseen; the next tree must be full
+        return `Screenshot of ${args.app}. No accessibility tree was read: get one (any other mode) before relying on element indices; it will be a full tree.`;
+      }
+      const t = observations.render(args.app, p.tree, { full: mode !== "diff" });
+      return mode === "full" && !p.shot ? `${t}\n(No screenshot is available for this window.)` : t;
+    } };
+  }
+  if (name === "batch") {
+    const steps = batchSteps(args);
+    return { steps, timeoutMs: args.timeout_ms, isError: (p) => !!p.fail, render: (p) => {
+      const n = steps.length;
+      const head = p.fail
+        ? `Batch stopped at step ${p.fail.step} of ${n} (${p.fail.tool}): ${p.fail.error}\n${p.fail.step > 1 ? `Steps 1-${p.fail.step - 1} completed` : "No step completed"}; ${p.fail.step < n ? `steps ${p.fail.step + 1}-${n} were not run` : "it was the last step"}.`
+        : `Batch completed: all ${n} steps ran.`;
+      return [head, ...p.states.map(stateText)].join("\n\n") + (args.screenshot ? missingShot(p) : "");
+    } };
+  }
+  if (ACTION_RESULT.has(name)) return { render: (p) => `Done. ${stateText(p.states[0])}${args.screenshot ? missingShot(p) : ""}` };
+  return { timeoutMs: args.timeout_ms };
+}
+
 export async function callTool(name, args = {}, signal) {
   if (isServiceTool(name)) return service.call(name, args, signal);
   if (isBrowserTool(name)) return browser.call(name, args);
   const bad = validate(name, args);
   if (bad) return text(bad, true);
+  return execute(name, args, signal);
+}
+
+async function execute(name, args, signal) {
+  if (name === "reset_repl") {
+    observations.forget();
+    try {
+      return text(await engine.reset(signal)
+        ? "REPL reset: all JavaScript bindings were discarded. Apps, windows and documents were not changed."
+        : "The REPL is not running, so there was nothing to reset; the next call starts a fresh one.");
+    } catch (e) { return text(`reset failed: ${e.message}`, true); }
+  }
+  // Scripts can observe and act on anything, so later diffs restart from a full tree.
+  if (name === "run_cua_js") observations.forget();
   const inlineAudio = name === "stop_audio_recording" && args.include_audio === true;
-  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK);
+  const p = plan(name, args);
+  const code = `nodeRepl.write(${JSON.stringify(START)});\n` + buildCell(name, inlineAudio && !audioContentOk() ? { ...args, include_audio: false } : args, MARK, p);
   for (let attempt = 0; ; attempt++) {
     try {
-      const r = await engine.run(code, undefined, signal, { allowAudio: name === "start_audio_recording" });
+      const r = await engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
+      if (name === "run_cua_js") { // the script's own output and errors, as the REPL returned them
+        if (!r.isError) return withDocs(extractOutput(r.content, MARK) ?? []);
+        const out = extractOutput(r.content.slice(1), MARK) ?? [];
+        return { content: limitOutput([r.content[0] ?? { type: "text", text: "script failed" }, ...out]), isError: true };
+      }
       const out = extractOutput(r.content, MARK);
       if (name === "start_audio_recording" && !r.isError) engine.keepAliveUntil(Date.now() + Number(args.max_duration_ms ?? 60000) + 5000);
       if (name === "stop_audio_recording") engine.keepAliveUntil(0);
@@ -75,16 +129,26 @@ export async function callTool(name, args = {}, signal) {
         const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").slice(0, 1000).trim(); // REPL errors come first
         return text(msg || "computer-use action failed", true);
       }
-      const docs = firstUse.take(); // once per session, ahead of the result
-      return { content: [...(docs ? [docs] : []), ...(out.length ? out : [{ type: "text", text: "Done." }])] };
+      if (!p.render) return withDocs(out);
+      const [first, ...rest] = out;
+      const payload = JSON.parse(first?.text ?? "");
+      return withDocs([{ type: "text", text: p.render(payload) }, ...rest], p.isError?.(payload));
     } catch (e) {
       // A crashed engine restarts on the next cell; only reads are retried.
       if (signal?.aborted) return text("cancelled", true);
       if (e instanceof EngineError && e.code === "ENGINE_EXIT" && attempt === 0 && isReadOnly(name)) continue;
       log(`call ${name} failed: ${e.message}`);
+      if (!(e instanceof EngineError)) return text(`unexpected engine output: ${e.message}`, true);
       return text(`${e.message}\nDiagnostics: node ${new URL(import.meta.url).pathname} --doctor (log: ${STATE_DIR}/shim.log)`, true);
     }
   }
+}
+
+// A successful result, capped like Codex's tool output (about 25k tokens), with
+// OpenAI's first-use docs ahead of it once per session.
+function withDocs(out, isError = false) {
+  const docs = firstUse.take();
+  return { content: [...(docs ? [docs] : []), ...limitOutput(out.length ? out : [{ type: "text", text: "Done." }])], ...(isError ? { isError: true } : {}) };
 }
 
 function serve() {

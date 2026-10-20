@@ -6,7 +6,8 @@
 //   3. removes the legacy v0.1 Codex worker registration and its processes;
 //   4. links the repo's Claude Code skill into $CLAUDE_CONFIG_DIR/skills.
 // Flags: --keep-native (skip step 2), --skip-live (skip the live preflight),
-// --skip-skill (skip step 4).
+// --skip-skill (skip step 4), --enable-js / --disable-js (opt in/out of
+// run_cua_js + reset_repl; without either, the current registration's choice is kept).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +23,7 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || os.homedir();
 const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 const SETTINGS = path.join(CLAUDE_HOME, "settings.json");
 const SKILL = "openai-computer-use";
-const PERSIST = ["CODEX_HOME", "OPENAI_CUA_APP", "OPENAI_CUA_MCP_JSON", "OPENAI_CUA_IDLE_MS", "OPENAI_CUA_CALL_TIMEOUT_MS", "OPENAI_CUA_STATE_DIR"];
+const PERSIST = ["CODEX_HOME", "OPENAI_CUA_APP", "OPENAI_CUA_MCP_JSON", "OPENAI_CUA_IDLE_MS", "OPENAI_CUA_CALL_TIMEOUT_MS", "OPENAI_CUA_STATE_DIR", "OPENAI_CUA_ENABLE_JS"];
 const flag = (f) => process.argv.includes(f);
 const ok = (m) => console.log("✓ " + m);
 const die = (m) => { console.error("✗ " + m + "\nNo configuration was changed."); process.exit(1); };
@@ -57,6 +58,11 @@ if (!flag("--keep-native")) {
 let previous = null;
 try { previous = JSON.parse(fs.readFileSync(path.join(CLAUDE_DIR, ".claude.json"), "utf8"))?.mcpServers?.[NAME] ?? null; }
 catch (e) { if (e.code !== "ENOENT") die(`cannot parse ${path.join(CLAUDE_DIR, ".claude.json")}: ${e.message}`); }
+// run_cua_js is opt-in; without a flag, keep the current registration's choice.
+if (flag("--enable-js") && flag("--disable-js")) die("--enable-js and --disable-js conflict");
+if (flag("--enable-js") || (!flag("--disable-js") && !env.OPENAI_CUA_ENABLE_JS && previous?.env?.OPENAI_CUA_ENABLE_JS === "1")) env.OPENAI_CUA_ENABLE_JS = "1";
+if (flag("--disable-js")) delete env.OPENAI_CUA_ENABLE_JS;
+ok(`run_cua_js: ${env.OPENAI_CUA_ENABLE_JS === "1" ? "enabled" : "disabled (enable with --enable-js)"}`);
 if (!flag("--skip-live")) {
   const r = run(node, [SHIM, "--doctor"]);
   if (r.status !== 0) die(`live engine check failed:\n${r.stdout}${r.stderr}`);

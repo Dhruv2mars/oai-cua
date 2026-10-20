@@ -7,7 +7,9 @@
 // FAKE_IGNORE_TERM (ignores SIGTERM/EOF and spawns a grandchild),
 // FAKE_AUDIO_ELICIT_ON_CLICK (a click also asks to record audio), FAKE_WAV_BYTES,
 // FAKE_DOCS (first-use docs text; "" disables), FAKE_REPL_RESET (file path:
-// the REPL restarts once before the first bridge cell, printing FAKE_RESET_DOCS).
+// the REPL restarts once before the first bridge cell, printing FAKE_RESET_DOCS),
+// FAKE_TREE_FILE (JSON {app: tree} read on every capture), FAKE_NO_SHOT.
+// Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 
@@ -48,16 +50,25 @@ function wav(dataBytes) { // 24 kHz stereo 16-bit
 }
 
 let out = [];
+const treeOf = (name) => {
+  if (E.FAKE_TREE_FILE && fs.existsSync(E.FAKE_TREE_FILE)) { const t = JSON.parse(fs.readFileSync(E.FAKE_TREE_FILE, "utf8"))[name]; if (t != null) return t; }
+  return `tree of ${name} é日`;
+};
+const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable for fake."); return new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); };
+// Without disableDiffing the real engine answers with its own (shared-baseline) diff.
+const capture = (name, o, kind) => { record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
 const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
+    if (args[0] === "FAIL") throw new Error(`fake ${method} failure`);
     if (method === "click" && E.FAKE_AUDIO_ELICIT_ON_CLICK) await audioApproval().catch(() => {});
   };
   return {
     click: rec("click"), typeText: rec("typeText"), paste: rec("paste"), pressKey: rec("pressKey"), scroll: rec("scroll"),
     drag: rec("drag"), setValue: rec("setValue"), selectText: rec("selectText"), performSecondaryAction: rec("performSecondaryAction"),
-    async getAXState() { return `state of ${name} é日`; },
-    async getAXStateAndScreenshot() { return { state: `tree of ${name} é日`, screenshot: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]) }; },
+    async getAXState(o) { return capture(name, o, "tree"); },
+    async getScreenshot(o) { record({ ev: "observe", app: name, kind: "shot", emit: o?.emit }); return shot(); },
+    async getAXStateAndScreenshot(o) { const state = capture(name, o, "tree+shot"); return E.FAKE_NO_SHOT ? { state } : { state, screenshot: shot() }; },
   };
 };
 globalThis.nodeRepl = {
@@ -66,7 +77,7 @@ globalThis.nodeRepl = {
   ...(E.NODE_REPL_ENABLE_AUDIO === "1" ? { emitAudio: async (url) => out.push({ type: "audio", mimeType: "audio/wav", data: url.slice(url.indexOf(",") + 1) }) } : {}),
 };
 let recording = null;
-const computer = E.SKY_ENABLE_AUDIO === "1" ? {
+const audioComputer = E.SKY_ENABLE_AUDIO === "1" ? {
   async start_audio_recording(input = {}) {
     record({ ev: "audio", method: "start", input });
     await audioApproval();
@@ -80,16 +91,30 @@ const computer = E.SKY_ENABLE_AUDIO === "1" ? {
     return { filepath: "/tmp/fake-computer-audio.wav", bytes, data_url: "data:audio/wav;base64," + Buffer.from(bytes).toString("base64") };
   },
 } : {};
-globalThis.cua = {
-  computer: { target: "mac", ...computer },
+const resolve = (app) => (/browser-link/.test(app) ? "com.google.Chrome" : app); // service resolves identity
+// Like the real service, every app use goes through app-access approval.
+const makeComputer = () => {
+  const c = { target: "mac", ...audioComputer };
+  for (const m of ["get_app_state", "click", "press_key", "type_text"])
+    c[m] = async (input) => {
+      if (E.FAKE_ELICIT && m === "get_app_state") { const r = await elicit(`Allow Computer Use to use "${input.app}"?`); record({ ev: "elicit", action: r.action }); if (r.action !== "accept") throw new Error("not approved"); }
+      record({ ev: "computer", method: m, input }); return m === "get_app_state" ? { app: resolve(input.app), text: treeOf(input.app), screenshot: null } : undefined;
+    };
+  return c;
+};
+let computer;
+const makeCua = () => ({
+  computer: (computer = makeComputer()),
   async getState() { return E.FAKE_AUTH_FAIL ? { apps: [], errors: ["Native apps: Error: Sky Computer Use native pipe startup failed"] } : { apps: [] }; },
   async listApps() { return [{ id: "com.apple.TextEdit", displayName: "TextEdit", isRunning: true, windows: [{ title: "fixture" }] }]; },
   async getApp(name) {
-    if (E.FAKE_ELICIT) { const r = await elicit(`Allow Computer Use to use "${name}"?`); record({ ev: "elicit", action: r.action }); if (r.action !== "accept") throw new Error("not approved"); }
+    await computer.get_app_state({ app: name, disableDiff: true });
     nodeRepl.write(`auto-emitted state for ${name}`); // real getApp emits state too
     return app(name);
   },
-};
+});
+globalThis.cua = makeCua();
+const initialGlobals = new Set(Object.keys(globalThis));
 const AsyncFunction = (async () => {}).constructor;
 
 // Like cua-repl, a fresh REPL prints first-use docs ahead of a cell's output.
@@ -116,7 +141,7 @@ async function handle(m) {
     fresh = false;
     if (E.FAKE_REPL_RESET && code.includes("__cb") && !fs.existsSync(E.FAKE_REPL_RESET)) { fs.writeFileSync(E.FAKE_REPL_RESET, ""); docs = E.FAKE_RESET_DOCS ?? DOCS; }
     const boot = docs ? [{ type: "text", text: docs }] : [];
-    if (!fresh && code.includes("__cb") && seen++) boot.push({ type: "text", text: "Warning: A was declared with const; use let for reassignable variables.\n" }); // real REPL redeclaration noise
+    if (!fresh && /^nodeRepl\.write\([^\n]*\);\nconst A = /.test(code) && seen++) boot.push({ type: "text", text: "Warning: A was declared with const; use let for reassignable variables.\n" }); // real REPL redeclaration noise
     try {
       await new AsyncFunction(code)();
       send({ jsonrpc: "2.0", id: m.id, result: { content: [...boot, ...out] } });
@@ -124,6 +149,12 @@ async function handle(m) {
       send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: e.message }, ...out], isError: true } });
     }
     return;
+  }
+  if (m.method === "tools/call" && m.params?.name === "js_reset") {
+    record({ ev: "js_reset" });
+    for (const k of Object.keys(globalThis)) if (!initialGlobals.has(k)) delete globalThis[k];
+    globalThis.cua = makeCua(); // fresh runtime
+    return send({ jsonrpc: "2.0", id: m.id, result: { content: [] } });
   }
   if (m.id != null && !m.method && waiting.has(m.id)) { waiting.get(m.id)(m.result); waiting.delete(m.id); return; }
   if (m.id != null && m.method) send({ jsonrpc: "2.0", id: m.id, result: {} });

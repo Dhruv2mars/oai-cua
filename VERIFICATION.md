@@ -536,3 +536,103 @@ the real `lsof` check), and shim routing. `bun run check`: 33 pass.
 - The user still has to enable remote debugging in their Helium and click
   Allow per connection. Each Claude session holds its own connection, so it is
   one prompt per session.
+
+## Observation modes, batch and scripts (2026-10-20, thread `observe`)
+
+All live tests drove this branch's `node src/shim.mjs` directly over stdio
+JSON-RPC, with probe scripts kept in `/tmp/observe-probe/`. The targets were two
+scratch TextEdit documents, `/tmp/observe-probe/observe-live*.txt`, opened with
+`open -g` and closed again without saving. During the tests the frontmost app
+stayed T3 Code.
+
+### Engine findings (real engine, raw cells)
+
+- **The engine's diff baseline is shared across sessions.** In this test, two
+  engines (e1 and e2) bound Finder. e2 opened the View menu. e1's next diffing
+  `getAXState` then said `There has been no change in the accessibility tree`,
+  although e1 had never seen the menu. A `disableDiffing` capture made in e1
+  straight afterwards showed the menu open. So engine diffs can silently hide
+  changes when parallel sessions use the same app. The bridge therefore always
+  captures with `disableDiffing: true` and diffs against what *this* session
+  last returned. The fake engine returns `ENGINE DIFF (must not be used)` when
+  `disableDiffing` is missing, and a test asserts that this string never
+  appears.
+- **REPL persistence:** top-level `const`/`let` bindings persist across `js`
+  cells. Bridge cells now run inside a block (`{ … }`), so they no longer
+  create the top-level `const A`, which would have collided with a script's
+  own `A`.
+- **`cua.computer` is tamper-resistant.** Patching a method in place (for
+  example `cua.computer.get_app_state = wrapper`) makes the next
+  `cua.getApp` throw `'get' on proxy: property 'get_app_state' is a read-only
+  and non-configurable data property…`. The engine freezes the object behind a
+  Proxy on first use. An in-REPL Chrome guard is therefore impossible, and a
+  script can't swap the API out either. The Chrome block relies on these
+  layers instead:
+  1. a static `/chrome/i` check on tool arguments and script source
+     (defense in depth only);
+  2. app-access approval, which the bridge answers outside the REPL. A script
+     importing the raw client (`await import("@oai/sky")` →
+     `sky.get_app_state({app:"Finder"})`) still produced
+     `engine#1 approved: Allow Computer Use to use "Finder"?` in the bridge log.
+     So scripts can't answer approval themselves, and Chrome is declined by its
+     resolved bundle id;
+  3. the engine env, which disables the browser surface and the Chrome backend.
+
+  Google Chrome is not installed on the test Mac, so nothing Chrome-related ran
+  live. The REPL can `import("node:child_process")`, which is why
+  `run_cua_js` is opt in.
+- **Window targeting is not possible on macOS** through the API. The minified
+  `create_tinysky_alt.js` gives the mac `getApp(t)` a single string parameter.
+  It calls `get_app_state({app, disableDiff})` and binds the app. Only the
+  Linux and Windows variants have `getApp({windowId})`, `listWindows` and
+  `get_window`. Live: `Object.getOwnPropertyNames(cua)` returned
+  `rewriteDocumentation,getState,computer,listApps,getApp,initialize`;
+  `typeof cua.listWindows` returned `undefined`; `getApp("TextEdit",
+  {windowId: 1})` silently ignored the option; `cua.computer.get_app_state({app,
+  window: "other"})` ignored the extra key; and `listApps()` returns no windows
+  on mac. **Workaround, verified:** with two scratch docs open, clicking
+  TextEdit's `Window` menu (index 17) and then `observe-live2.txt, ID:
+  makeKeyAndOrderFront:` (index 43) switched the key window. The click result was
+  a full tree for `Window: "observe-live2.txt"`, because the window change makes
+  the bridge skip the diff. The frontmost app stayed T3 Code.
+
+### Live results (this branch's shim)
+
+| Capability | Evidence |
+| --- | --- |
+| `auto`, first call | `Full accessibility tree of TextEdit:` + tree: 922 chars plus a 21 KB JPEG, 1.6 s (including engine start) |
+| `auto`, unchanged | `No change in the accessibility tree since your last observation of TextEdit; all element indices are still valid.`: 113 chars, no image, 54 ms |
+| action diff | `type_text " v3"` → `Done. Accessibility diff since your last observation…` with context `2 text entry area …` and `  …`, then `- line2 é日 ok v2!` / `+ line2 é日 ok v2! V3`; the menu/button lines were omitted |
+| `text` / `full` | full tree with no image / full tree plus image |
+| `screenshot` | image only (22.8 KB) with the "No accessibility tree was read" note; the next `auto` returned a **full** tree plus image, not a diff |
+| `batch` OK | 4 steps (`super+Down`, type, `Return`, type `line2 é日`) in one call, 1.47 s, `Batch completed: all 4 steps ran.` + one diff |
+| `batch` failure | `Batch stopped at step 2 of 3 (perform_secondary_action): Computer Use server error -10005: Bogus Action is not a valid secondary action for 2` / `Steps 1-1 completed; steps 3-3 were not run.` + the diff showing step 1's ` ok`; `isError: true` |
+| `run_cua_js` persistence | `const keep = 7; let A = "user A"`, then `get_app_state`, then `batch`, then `nodeRepl.write(\`keep=${keep} A=${A}\`)` → `keep=7 A=user A` |
+| `reset_repl` | `REPL reset: …` (4 ms), then `typeof keep + " " + typeof A` → `undefined undefined` |
+| output cap | `"x".repeat(300000) + "END"` → 100,077 chars, with head, truncation notice and tail `…END` |
+| Chrome (static) | `await cua.getApp("Google Chrome")` → refused before reaching the engine |
+| scripted branching | one `run_cua_js` cell opened the Window menu, found the item's index by regex, clicked it, and read the new key window: `Window: "observe-live.txt"` |
+
+### Automated
+
+`bun run check` now runs 52 tests (after rebasing onto the actions, guidance and service work). This change adds coverage for: `diffTree` (context,
+multi-line values, window switch, falling back to the full tree when the diff
+isn't smaller); auto/explicit modes with labels, screenshot-only forcing a full
+tree, and engine diffs never used; a missing screenshot; the output cap; batch
+(one cell, one state read, default app, stopping at the first failure,
+validating every step up front, Chrome in a step); `run_cua_js` (disabled by
+default, persistence, no leaked bridge bindings, reset, errors with partial
+output, Chrome declined by resolved identity even via `cua.computer` and after
+a reset, truncation); and the installer's `--enable-js`/`--disable-js`.
+
+After rebasing onto main (actions, guidance and service), the merged shim was
+probed live again on a fresh scratch doc. These all held:
+
+- first `get_app_state`: the first-use docs and a full tree, plus a 20 KB image
+- second: `No change`, 113 chars, 52 ms
+- `batch` with `screenshot: true`: one image after the last step
+- a failing batch step: reported, with a value diff showing only the changed
+  lines
+- REPL bindings survived a `screenshot` observation
+- `reset_repl` cleared them
+- the frontmost app stayed T3 Code

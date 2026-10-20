@@ -24,8 +24,40 @@ The shim starts one engine per Claude session, lazily, on the first tool call.
 It turns each Claude tool call into a short JavaScript cell for OpenAI's `cua`
 API. Arguments are embedded as JSON literals.
 
-- `get_app_state` returns the numbered accessibility tree plus a JPEG screenshot.
-- Actions return the updated accessibility state, as a diff.
+- `get_app_state` observes an app's key window. Its `mode` picks what comes back:
+
+  | `mode` | Returns |
+  | --- | --- |
+  | `auto` (default) | The first observation of an app in a session is `full`; later ones are `diff`. |
+  | `full` | The full numbered accessibility tree plus a JPEG screenshot. |
+  | `text` | The full tree, with no screenshot. |
+  | `diff` | Only what changed since this session last saw the app, with no screenshot. |
+  | `screenshot` | Only the image. The next tree for that app is then sent in full, so indices are never relied on unseen. |
+
+- Actions return the state afterwards in the same form. Every result says what
+  it is: `Full accessibility tree of …`, `Accessibility diff since your last
+  observation of …`, or `No change …`. In a diff, `-` marks removed lines, `+`
+  marks added or changed ones, unchanged ancestors are shown as context, and a
+  changed multi-line value shows only its changed lines. A full tree is sent
+  instead when the window changed or the diff would not be much smaller.
+- Diffs are computed by the bridge, per session. The engine can diff too, but
+  its baseline is shared by every session using the service, so one session's
+  observation could turn into another session's "no change"
+  ([VERIFICATION.md](VERIFICATION.md)).
+- `batch` runs up to 50 action steps (`{tool, args}`, any action tool) in one
+  engine call and reads the state once at the end, for each app it touched.
+  Every step is validated before anything runs. It stops at the first failing
+  step and reports which one failed, along with the state at that point.
+  `screenshot: true` is a batch option there, not a step argument.
+- `run_cua_js` and `reset_repl` are opt in (`node install.mjs --enable-js`, or
+  `OPENAI_CUA_ENABLE_JS=1`). `run_cua_js` runs JavaScript in the engine's
+  persistent REPL with the `cua` API, as Codex's `js` tool does. Top-level
+  bindings persist across calls, and the bridge's own cells don't add any.
+  `reset_repl` discards them. The REPL can import Node modules such as
+  `node:child_process`, so enabling it is equivalent to letting Claude run local
+  code.
+- Tool output is capped at about 25k tokens (100k characters, keeping the head
+  and the tail) and 8 images per call, like Codex's output limit.
 - `type_text` types single-line printable ASCII as keystrokes. Text with a
   newline, carriage return or tab, or any non-ASCII character, goes through the
   engine's paste instead. That way a newline can never become a Return press
@@ -53,14 +85,21 @@ API. Arguments are embedded as JSON literals.
   other time. The engine is kept alive until the recording ends.
 - The engine asks for per-app access approval. The shim grants it automatically.
   OpenAI's service still enforces its own denied and forbidden app policy.
-- **Google Chrome is blocked.** Any app name matching `chrome` is refused.
-  Approval is also declined when the service resolves an app to Chrome, and the
-  engine's own browser surface and Chrome backend are disabled.
+- **Google Chrome is blocked.** Any app name matching `chrome` is refused, in
+  every tool, batch step and script. App-access approval is declined when the
+  service resolves an app to Chrome. The bridge answers approval outside the
+  REPL, so scripts can't answer it themselves, even when they import the raw
+  service client. The engine's own browser surface and Chrome backend are also disabled.
+- Only the key window can be observed. On macOS, `cua.getApp` takes only an app
+  name, and the API has no `listWindows` and no window parameter. To work in
+  another window, click the app's **Window** menu, then click the window's
+  title. This makes it the key window without bringing the app to the front.
 
 Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `paste`,
 `press_key`, `scroll`, `drag`, `set_value`, `select_text`,
-`perform_secondary_action`, `start_audio_recording`, `stop_audio_recording`,
-plus the `browser_*` tools for Helium (below).
+`perform_secondary_action`, `batch`, `start_audio_recording`,
+`stop_audio_recording`, the opt-in `run_cua_js` and `reset_repl`, plus the `browser_*` tools
+for Helium (below).
 
 ### OpenAI's guidance, delivered at runtime
 
@@ -243,6 +282,9 @@ Overrides:
 - `OPENAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
 - `CODEX_HOME`, `OPENAI_CUA_STATE_DIR`.
 - `OPENAI_CUA_COMPUTER_HISTORY=1`: expose the Computer History tools. Off by default.
+- `OPENAI_CUA_ENABLE_JS=1`: enables `run_cua_js` and `reset_repl`. The
+  installer sets it with `--enable-js` and removes it with `--disable-js`.
+  Without either flag, it keeps the current registration's choice.
 - `OPENAI_CUA_PYTHON`, `OPENAI_CUA_NATIVE_CLIENT`, `OPENAI_CUA_NATIVE_PARENT`:
   the python3, `SkyComputerUseClient` and signed parent `node` used for the
   native client.
