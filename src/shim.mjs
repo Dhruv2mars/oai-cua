@@ -43,20 +43,21 @@ async function endTurn(why) {
   try { await engine.endTurn(ended); } catch (e) { log(`turn end failed: ${e.message}`); }
 }
 
-// Stops. A stop (stop_app, the user's, or a declined prompt) lasts for the
-// turn it happened in; the service clears it when that turn ends. It sometimes
-// keeps it until the engine's connection closes instead, so an app that still
-// reports a stop in a later turn than the one it was seen in gets a fresh
-// engine and one retry. A stop first seen in the current turn is honoured.
-const stops = new Map(); // app → turn number the stop was seen in
-const usedApps = new Set(); // what stop_app without an app stops
+// Stops made by stop_app last for the turn they happened in; the service
+// clears them when that turn ends, but sometimes keeps them until the engine's
+// connection closes. The user can only stop an app that has an active session,
+// and stop_app leaves none, so if the first use of that app in a later turn
+// still reports a stop, it is ours outliving its turn: the engine is replaced
+// once and the call retried. Stops the user makes are always honoured.
+const ownStops = new Map(); // app name or bundle id → turn of its stop_app
 const appKey = (a) => String(a).trim().toLowerCase();
-const staleStop = (apps) => apps.every((a) => stops.get(appKey(a)) < turn.n);
-function stopFailure(r) {
-  let msg = "";
-  if (r.isError) msg = r.content[0]?.text;
-  else try { msg = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail?.error; } catch {}
-  return diagnose(msg)?.kind === "user-stopped";
+// "stopped" when the call failed on a stop before doing anything, "" otherwise.
+function stopFailure(name, r) {
+  if (r.isError) return diagnose(r.content[0]?.text)?.kind === "user-stopped" ? "stopped" : "";
+  let fail;
+  try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail; } catch {}
+  if (diagnose(fail?.error)?.kind !== "user-stopped") return "";
+  return name === "batch" && fail.step > 1 ? "partial" : "stopped"; // earlier batch steps ran: never re-run them
 }
 
 const engine = new Engine({
@@ -156,7 +157,8 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
-      for (const a of args.app != null ? [appKey(args.app)] : usedApps) stops.set(a, turn.n);
+      const names = [args.app, ...[...String(r.content?.[0]?.text ?? "").matchAll(/^Stopped (.+?)(?: \((.+?)\))?\.$/gm)].flatMap((m) => [m[1], m[2]])];
+      for (const a of names.filter(Boolean)) ownStops.set(appKey(a), turn.n);
       await endTurn("stop_app");
     }
     return r;
@@ -189,15 +191,16 @@ async function execute(name, args, signal) {
       const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
       if (apps.length && name !== "stop_app" && name !== "run_cua_js") {
-        for (const a of apps) usedApps.add(appKey(a));
-        if (!stopFailure(r)) for (const a of apps) stops.delete(appKey(a));
-        else if (!recycled && staleStop(apps)) { // outlived its turn: only a new engine clears it
-          log(`${apps.join(", ")} still stopped from an earlier turn; restarting the engine`);
+        const keys = apps.map(appKey), stop = stopFailure(name, r);
+        if (!stop) keys.forEach((k) => ownStops.delete(k));
+        else if (stop === "stopped" && !recycled && keys.some((k) => ownStops.get(k) < turn.n) && !engine.recording) {
+          keys.forEach((k) => ownStops.delete(k)); // once per stop_app
+          log(`${apps.join(", ")} still stopped by an earlier turn's stop_app; restarting the engine`);
           recycled = true;
           observations.forget();
           await engine.recycle("stale stop");
           continue;
-        } else for (const a of apps) if (!stops.has(appKey(a))) stops.set(appKey(a), turn.n);
+        }
       }
       if (name === "run_cua_js") { // the script's own output and errors, as the REPL returned them
         if (!r.isError) return withDocs(extractOutput(r.content, MARK) ?? []);

@@ -762,7 +762,7 @@ export class HeliumBrowser {
         }`).catch(() => null);
         if (href) {
           const nt = await this.#openOwned(href);
-          return [`${ref} is a link that opens a new tab; opened it in the background as ${nt.alias} (yours, cleaned up later) instead of clicking.`, await this.#snapshot(nt, { full: true })];
+          return [`${ref} is a link that opens a new tab; opened it in the background as ${nt.alias} (yours, cleaned up later) instead of clicking.`, nt.dialog ? this.#dialogNotice(nt) : await this.#snapshot(nt, { full: true })];
         }
       }
       ({ x, y } = await this.#center(t, id, ref));

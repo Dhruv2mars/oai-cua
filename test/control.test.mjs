@@ -26,7 +26,7 @@ function sandbox(env = {}) {
   return {
     dir, log, state: path.join(dir, "state"),
     env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OAI_CUA_APP: path.join(dir, "ChatGPT.app"), OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
-      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", ...env },
+      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", CLAUDE_CODE_ENTRYPOINT: "cli", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -104,14 +104,23 @@ describe("per-app approval", () => {
     expect(elicitations(s).length).toBe(1); // not asked again once detected
   });
 
-  test("an instant decline (T3 Code's Claude Code) also falls back to the policy", async () => {
-    const sb = sandbox({ FAKE_ELICIT: "1" }), s = startShim(sb);
+  test("an instant decline under an Agent SDK host (T3 Code) also falls back to the policy", async () => {
+    const sb = sandbox({ FAKE_ELICIT: "1", CLAUDE_CODE_ENTRYPOINT: "sdk-ts" }), s = startShim(sb);
     s.onRequest = () => ({ action: "decline" }); // answered by the client within milliseconds
     await s.init({ elicitation: {} });
     expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
     expect((await s.call("get_app_state", { app: "Notes" })).isError).toBeUndefined();
     expect(elicitations(s).length).toBe(1);
     expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toMatch(/answered the approval prompt with decline in \d+ms/);
+  });
+
+  test("an instant decline from the interactive CLI (e.g. an Elicitation hook) stays a refusal", async () => {
+    const sb = sandbox({ FAKE_ELICIT: "1", CLAUDE_CODE_ENTRYPOINT: "cli" }), s = startShim(sb);
+    s.onRequest = () => ({ action: "decline" });
+    await s.init({ elicitation: {} });
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user declined access");
+    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user declined access");
+    expect(elicitations(s).length).toBe(2); // still asked every time
   });
 
   test("deny-unknown declines unapproved apps but honours always-allowed ones; Chrome never asks", async () => {
@@ -190,21 +199,49 @@ describe("stop, takeover and turns", () => {
     expect(r.isError).toBeUndefined();
     expect(textOf(r)).toContain("Full accessibility tree of TextEdit");
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2); // one engine restart
-    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toContain("TextEdit still stopped from an earlier turn; restarting the engine");
+    expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).toContain("TextEdit still stopped by an earlier turn's stop_app; restarting the engine");
   });
 
-  test("a user stop first seen in this turn is honoured; after the turn ends it is cleared", async () => {
+  test("a user's stop is never overridden, even in a later turn", async () => {
     const sb = sandbox({ FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
     await s.init();
     for (let i = 0; i < 2; i++) {
-      const r = await s.call("get_app_state", { app: "TextEdit" });
-      expect(r.isError).toBe(true);
-      expect(textOf(r)).toContain("The user stopped Computer Use for this app");
+      expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use for this app");
+      await sleep(400); // the turn ends
     }
-    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart within the turn
-    await sleep(500); // the turn ends
-    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1); // no restart
+  });
+
+  test("the stale-stop restart happens once per stop_app, and never re-runs batch steps", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("get_app_state", { app: "Notes" });
+    await s.call("stop_app", { app: "Notes" });
+    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("Batch stopped at step 2 of 2");
+    expect(sb.events().filter((e) => e.ev === "action" && e.method === "pressKey").length).toBe(1); // step 1 ran once
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
+  test("a bundle id matches a stop_app made by name", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" }); // "Stopped TextEdit (com.example.TextEdit)."
+    expect((await s.call("get_app_state", { app: "com.example.TextEdit" })).isError).toBeUndefined();
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+  });
+
+  test("no restart while an audio recording holds the engine", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" });
+    expect((await s.call("start_audio_recording", { max_duration_ms: 5000 })).isError).toBeUndefined();
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use");
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
   });
 
   test("the turn ends after Claude goes quiet", async () => {

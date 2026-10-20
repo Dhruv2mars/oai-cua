@@ -10,8 +10,11 @@
 //     prompt          ask with a native macOS dialog
 //     deny-unknown    decline apps that are not already approved
 // Clients that advertise elicitation but cannot show it answer within
-// milliseconds (headless Claude Code with `cancel`, T3 Code's Claude Code with
-// `decline`); no person answers that fast, so they use the fallback.
+// milliseconds; no person answers that fast, so they use the fallback. An
+// instant `cancel` (headless Claude Code) always means that. An instant
+// `decline` is also what a deliberate rule sends (e.g. an Elicitation hook),
+// so it counts only under an Agent SDK host such as T3 Code, whose Claude Code
+// declines every prompt it cannot show; elsewhere it stays a refusal.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,10 +48,10 @@ export function promptText(r) {
 }
 
 export class Approver {
-  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now } = {}) {
+  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now, sdkHost = /^sdk/.test(process.env.CLAUDE_CODE_ENTRYPOINT ?? "") } = {}) {
     this.policy = POLICIES.includes(policy) ? policy : "auto";
     if (policy && policy !== this.policy) log(`unknown OAI_CUA_APPROVAL=${policy}; using auto`);
-    Object.assign(this, { file, log, dialog, now });
+    Object.assign(this, { file, log, dialog, now, sdkHost });
     this.session = new Set();   // keys approved in this Claude session
     this.elicit = null;         // (request, signal) → Promise<{action, content}>, set when the client can elicit
     this.clientCannotAsk = false;
@@ -89,7 +92,7 @@ export class Approver {
       try {
         const res = await this.elicit(r, signal);
         const ms = this.now() - t;
-        if ((res?.action === "cancel" || res?.action === "decline") && ms < AUTO_ANSWER_MS) {
+        if ((res?.action === "cancel" || (res?.action === "decline" && this.sdkHost)) && ms < AUTO_ANSWER_MS) {
           this.clientCannotAsk = true; // answered by software, not a person
           this.log(`client answered the approval prompt with ${res.action} in ${ms}ms; using the fallback policy from now on`);
         } else if (res?.action === "accept" || res?.action === "decline" || res?.action === "cancel")

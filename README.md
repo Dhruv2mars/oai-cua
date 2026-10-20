@@ -130,11 +130,14 @@ API. Arguments are embedded as JSON literals.
   OpenAI's risk level and an "Always allow" choice. It asks once per app per
   session. Always-allowed apps are saved in `approvals.json` in the state dir
   (mode `0600`). Delete an entry to be asked again. Some clients advertise
-  elicitation but answer it themselves within milliseconds. Headless Claude
-  Code answers `cancel` in about 4 ms, and Claude Code inside T3 Code answers
-  `decline` in about 2 ms. No person answers that fast, so any answer under
-  250 ms counts as "this client can't ask". For those clients, and for clients
-  without elicitation, the `approval` option (`OAI_CUA_APPROVAL`) decides:
+  elicitation but answer it themselves within milliseconds. No person answers
+  that fast. An instant `cancel` (headless Claude Code, about 4 ms) always
+  counts as "this client can't ask". An instant `decline` counts only under an
+  Agent SDK host (`CLAUDE_CODE_ENTRYPOINT=sdk-*`, e.g. T3 Code, about 2 ms),
+  whose Claude Code declines every prompt it can't show. Elsewhere it stays a
+  refusal, so an Elicitation hook that declines an app still works. For those
+  clients, and for clients without elicitation, the `approval` option
+  (`OAI_CUA_APPROVAL`) decides:
   - `auto` (the default) accepts.
   - `prompt` shows a native macOS dialog.
   - `deny-unknown` declines apps that are not already allowed.
@@ -318,12 +321,13 @@ of these happens:
 - A call is cancelled, for example because you interrupted Claude.
 - `stop_app` runs. The app is then released without staying blocked.
 
-The service sometimes keeps a stop after its turn has ended, until the
-engine's connection closes. So if an app still reports a stop in a later turn
-than the one where the shim first saw it (from `stop_app`, or an earlier
-error), the shim starts a fresh engine and retries the call once. A stop first
-seen in the current turn, such as one you just made from the menu bar, is
-honoured until that turn ends.
+The service sometimes keeps a `stop_app` stop after its turn has ended,
+until the engine's connection closes. You can only stop an app that has an
+active session, and `stop_app` leaves none. So if the first use of that app
+in a later turn still reports a stop, it's the shim's own. The shim then
+starts a fresh engine and retries the call once (by app name or bundle id).
+It never does this for a batch whose earlier steps already ran, or while an
+audio recording is running. Stops you make are always honoured.
 
 At turn end, the shim sends the service's turn-ended request through a small
 trusted `node_repl` service of its own (`src/bridge-service.mjs`). That

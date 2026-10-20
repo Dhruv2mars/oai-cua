@@ -88,7 +88,7 @@ globalThis.nodeRepl = {
   emitImage: async (img) => out.push({ type: "image", mimeType: "image/jpeg", data: Buffer.from(img).toString("base64") }),
   async rpc(service, msg) { // the bridge's trusted service
     record({ ev: "rpc", service, msg });
-    if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopped.add(msg.app);
+    if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopped.add(msg.app).add(`com.example.${msg.app}`);
     if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
     if (msg.type === "turnEnded") return {};
     throw new Error(`unsupported cuabridge request: ${msg.type}`);
