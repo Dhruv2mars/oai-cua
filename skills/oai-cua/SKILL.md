@@ -1,11 +1,11 @@
 ---
-name: openai-computer-use
-description: Operate macOS desktop apps (read screens, click, type, scroll, fill forms) through the openai-computer-use MCP tools, which drive OpenAI's installed computer-use engine. Use for any task that needs to see or control app UI on this Mac, including browser work in Helium. Covers the observe-act-verify loop, app targeting, confirmation rules for risky actions, and this user's defaults.
+name: oai-cua
+description: Operate macOS desktop apps (read screens, click, type, scroll, fill forms) through the oai-cua MCP tools, which drive OpenAI's installed computer-use engine. Use for any task that needs to see or control app UI on this Mac, including browser work in Helium. Covers the observe-act-verify loop, app targeting, confirmation rules for risky actions, and this user's defaults.
 ---
 
 # Computer use with OpenAI's engine
 
-The `openai-computer-use` MCP server (tools `mcp__openai-computer-use__*`) runs
+The `oai-cua` MCP server (tools `mcp__oai-cua__*`) runs
 OpenAI's computer-use engine from the ChatGPT app. It works in the background:
 the user's cursor, keyboard focus and frontmost app are left alone, and several
 apps can be used at once.
@@ -13,7 +13,7 @@ apps can be used at once.
 ## 0. Defaults for this user
 
 - **Delegate.** Hand each computer-use task to a subagent on the `haiku` model
-  that uses only the `openai-computer-use` tools. Give it the task, the target
+  that uses only the `oai-cua` tools. Give it the task, the target
   app, what "done" looks like, and the confirmation rules below. Verify what it
   reports (a final `get_app_state`) before you tell the user it is done.
 - **Helium is the only browser.** For anything in a browser, target `Helium`.
@@ -35,12 +35,12 @@ from the installed app and passes it to you in three ways:
    maps that API onto these tools. Read it. Its workflow and confirmation rules
    apply to you.
 3. **MCP resources** (use `ReadMcpResourceTool` with server
-   `openai-computer-use`):
-   - `openai-cua://engine/first-use`: the same first-use docs. Re-read them after
+   `oai-cua`):
+   - `oai-cua://engine/first-use`: the same first-use docs. Re-read them after
      your context was summarized or compacted, mid task.
-   - `openai-cua://cua/docs/tinysky-alt-confirmations.md`: the full
+   - `oai-cua://cua/docs/tinysky-alt-confirmations.md`: the full
      confirmation policy.
-   - `openai-cua://bridge/guide`: tool mapping and an index of every OpenAI
+   - `oai-cua://bridge/guide`: tool mapping and an index of every OpenAI
      doc found (cua API docs, sky docs and skill, the Codex computer-use skill,
      plugin manifests).
    - The `computer-use` MCP prompt bundles all of this.

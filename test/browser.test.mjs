@@ -51,9 +51,9 @@ describe("browser: Helium-only endpoints", () => {
   test("endpoint discovery: env port/URL and DevToolsActivePort files; none means not enabled", async () => {
     const dir = tmp();
     fs.writeFileSync(path.join(dir, "DevToolsActivePort"), "9333\n/devtools/browser/abc\n");
-    expect(discoverEndpoints({ OPENAI_CUA_HELIUM_USER_DATA_DIR: dir })).toEqual([{ host: "127.0.0.1", port: 9333, path: "/devtools/browser/abc", source: dir }]);
-    expect(discoverEndpoints({ OPENAI_CUA_HELIUM_CDP: "9444", OPENAI_CUA_HELIUM_USER_DATA_DIR: "" })[0]).toMatchObject({ host: "127.0.0.1", port: 9444 });
-    expect(discoverEndpoints({ OPENAI_CUA_HELIUM_CDP: "ws://127.0.0.1:9555/devtools/browser/x", OPENAI_CUA_HELIUM_USER_DATA_DIR: "" })[0]).toMatchObject({ port: 9555, path: "/devtools/browser/x" });
+    expect(discoverEndpoints({ OAI_CUA_HELIUM_USER_DATA_DIR: dir })).toEqual([{ host: "127.0.0.1", port: 9333, path: "/devtools/browser/abc", source: dir }]);
+    expect(discoverEndpoints({ OAI_CUA_HELIUM_CDP: "9444", OAI_CUA_HELIUM_USER_DATA_DIR: "" })[0]).toMatchObject({ host: "127.0.0.1", port: 9444 });
+    expect(discoverEndpoints({ OAI_CUA_HELIUM_CDP: "ws://127.0.0.1:9555/devtools/browser/x", OAI_CUA_HELIUM_USER_DATA_DIR: "" })[0]).toMatchObject({ port: 9555, path: "/devtools/browser/x" });
     const b = new HeliumBrowser({ discover: () => [] });
     const r = await b.call("browser_list_tabs", {});
     expect(r.isError).toBe(true);
@@ -212,7 +212,7 @@ describe("browser: shim routing", () => {
     const fake = startFakeCdp();
     const dir = tmp();
     const p = spawn(NODE, [path.join(ROOT, "src/shim.mjs")], {
-      env: { ...process.env, HOME: dir, OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: path.join(dir, "missing.json"), OPENAI_CUA_HELIUM_CDP: String(fake.port) },
+      env: { ...process.env, HOME: dir, OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: path.join(dir, "missing.json"), OAI_CUA_HELIUM_CDP: String(fake.port) },
       stdio: ["pipe", "pipe", "pipe"],
     });
     cleanup.push(() => { fake.stop(); try { p.kill("SIGKILL"); } catch {} });

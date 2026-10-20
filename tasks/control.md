@@ -14,7 +14,7 @@ worktree's shim showing each capability, PR squash-merged to main.
 - [x] `NSRunningApplication.activate(.activateIgnoringOtherApps)` from a background Swift helper: <1 ms call, frontmost in ~22 ms (vs ~140 ms osascript).
 
 ## Implementation
-- [x] approval.mjs: session + persistent (0600) approvals, MCP elicitation forwarding, fast-cancel fallback, OPENAI_CUA_APPROVAL=auto|prompt|deny-unknown (prompt = native macOS dialog), Chrome hard-block
+- [x] approval.mjs: session + persistent (0600) approvals, MCP elicitation forwarding, fast-cancel fallback, OAI_CUA_APPROVAL=auto|prompt|deny-unknown (prompt = native macOS dialog), Chrome hard-block
 - [x] engine: async elicitation replies, shim timer paused during approval, turn metadata on every cell, trusted bridge service env
 - [x] bridge-service.mjs: resolve / stopApp / turnEnded allowlist
 - [x] turn lifecycle: new turn after idle gap / cancellation / stop_app; TurnEnded IPC + cua-repl `turn_ended`
@@ -22,7 +22,7 @@ worktree's shim showing each capability, PR squash-merged to main.
 - [x] takeover: keyboard actions refresh + retry once; index/coord actions return error + fresh state + hand-back guidance
 - [x] diagnose.mjs: map engine errors to actionable messages
 - [x] display-name lookup retry by bundle id
-- [x] focus.mjs + focus-helper.swift: frontmost guard + restore, OPENAI_CUA_RESTORE_FOCUS=0
+- [x] focus.mjs + focus-helper.swift: frontmost guard + restore, OAI_CUA_RESTORE_FOCUS=0
 - [x] tests (fake engine) for each behaviour
 - [x] README + VERIFICATION
 - [x] live probe: approval, stop_app, takeover/diagnostics, Helium cmd+t focus sampler

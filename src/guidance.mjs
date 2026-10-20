@@ -9,12 +9,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { CHATGPT_APP, CODEX_HOME, findRuntime, versionDirs } from "./lib.mjs";
 
-const SCHEME = "openai-cua://";
+const SCHEME = "oai-cua://";
 export const FIRST_USE_URI = `${SCHEME}engine/first-use`;
 export const GUIDE_URI = `${SCHEME}bridge/guide`;
 export const POLICY_URI = `${SCHEME}cua/docs/tinysky-alt-confirmations.md`;
 // Claude Code's default cap on MCP server instructions (2.1.x changelog).
-const MAX_INSTRUCTIONS = Number(process.env.OPENAI_CUA_INSTRUCTIONS_MAX) || 4096;
+const MAX_INSTRUCTIONS = Number(process.env.OAI_CUA_INSTRUCTIONS_MAX) || 4096;
 
 // How OpenAI's cua API (what its docs describe) maps onto this server's tools.
 const API_MAP = [
@@ -50,7 +50,7 @@ export function adapterNote(toolNames) {
 ${apiMapping(toolNames)}
 ${names.has("run_cua_js")
     ? "Where the docs say `cua_repl`, `node_repl` or the `js` tool, use run_cua_js (reset_repl for `js_reset`), or the dedicated tools when one fits. `rewriteDocumentation()` and the browser/tab APIs are not available (the browser surface is disabled)."
-    : "Where the docs say `cua_repl`, `node_repl` or the `js` tool, read \"these openai-computer-use tools\". `nodeRepl.write`/`emitImage`, `js_reset`, `rewriteDocumentation()` and the browser/tab APIs are not exposed here (the browser surface is disabled); tool results already include the state and screenshots. For code-batching advice, use batch for fixed sequences of actions."} Accessibility diffs here come from the bridge, per session, not from the engine: \"-\" removed, \"+\" added or changed. Examples that target Google Chrome are illustrative only: Chrome is blocked here; use Helium for browser work, through the browser_* tools.`;
+    : "Where the docs say `cua_repl`, `node_repl` or the `js` tool, read \"these oai-cua tools\". `nodeRepl.write`/`emitImage`, `js_reset`, `rewriteDocumentation()` and the browser/tab APIs are not exposed here (the browser surface is disabled); tool results already include the state and screenshots. For code-batching advice, use batch for fixed sequences of actions."} Accessibility diffs here come from the bridge, per session, not from the engine: \"-\" removed, \"+\" added or changed. Examples that target Google Chrome are illustrative only: Chrome is blocked here; use Helium for browser work, through the browser_* tools.`;
 }
 
 // ---------- discovery ----------
@@ -226,7 +226,7 @@ export function bootstrapText(content, start) {
 
 export function guideText(docs, toolNames) {
   const list = [...docs.values()].map((r) => `- ${r.uri}: ${r.title}`).join("\n");
-  return `# openai-computer-use: how to use these tools
+  return `# oai-cua: how to use these tools
 
 ${wrapper()}
 

@@ -117,13 +117,13 @@ export function validateBrowser(name, args) {
 // browser instance" at chrome://inspect/#remote-debugging (no relaunch).
 export function discoverEndpoints(env = process.env) {
   const out = [];
-  const spec = env.OPENAI_CUA_HELIUM_CDP?.trim();
+  const spec = env.OAI_CUA_HELIUM_CDP?.trim();
   if (spec) {
     const m = /^(?:(ws|http)s?:\/\/)?(\[[^\]]+\]|[^:/]+)?:?(\d+)(\/.*)?$/.exec(spec.includes(":") || !/^\d+$/.test(spec) ? spec : `:${spec}`);
-    if (!m) throw new Error(`OPENAI_CUA_HELIUM_CDP is not a port or ws/http URL: ${spec}`);
-    out.push({ host: m[2] || "127.0.0.1", port: Number(m[3]), path: m[1] === "ws" ? m[4] : undefined, source: "OPENAI_CUA_HELIUM_CDP" });
+    if (!m) throw new Error(`OAI_CUA_HELIUM_CDP is not a port or ws/http URL: ${spec}`);
+    out.push({ host: m[2] || "127.0.0.1", port: Number(m[3]), path: m[1] === "ws" ? m[4] : undefined, source: "OAI_CUA_HELIUM_CDP" });
   }
-  const dirs = env.OPENAI_CUA_HELIUM_USER_DATA_DIR != null ? env.OPENAI_CUA_HELIUM_USER_DATA_DIR.split(":").filter(Boolean) : [HELIUM_DATA_DIR];
+  const dirs = env.OAI_CUA_HELIUM_USER_DATA_DIR != null ? env.OAI_CUA_HELIUM_USER_DATA_DIR.split(":").filter(Boolean) : [HELIUM_DATA_DIR];
   for (const dir of dirs) {
     try {
       const [port, p] = fs.readFileSync(path.join(dir, "DevToolsActivePort"), "utf8").trim().split("\n");
@@ -562,7 +562,7 @@ export class HeliumBrowser {
   // see or tamper with it). Arguments are passed as JSON values.
   async #onElement(t, backendNodeId, fn, args = []) {
     const { frameTree } = await this.#send(t, "Page.getFrameTree");
-    const { executionContextId } = await this.#send(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "openai-cua-bridge" });
+    const { executionContextId } = await this.#send(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "oai-cua" });
     const { object } = await this.#send(t, "DOM.resolveNode", { backendNodeId, executionContextId });
     const r = await this.#send(t, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true });
     if (r.exceptionDetails) throw new CdpError(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
@@ -571,7 +571,7 @@ export class HeliumBrowser {
 
   async #evaluate(t, expression) {
     const { frameTree } = await this.#send(t, "Page.getFrameTree");
-    const { executionContextId } = await this.#send(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "openai-cua-bridge" });
+    const { executionContextId } = await this.#send(t, "Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "oai-cua" });
     const r = await this.#send(t, "Runtime.evaluate", { expression, contextId: executionContextId, returnByValue: true });
     if (r.exceptionDetails) throw new CdpError(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result?.value;

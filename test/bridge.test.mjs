@@ -22,8 +22,8 @@ function sandbox(env = {}) {
   fs.writeFileSync(log, "");
   return {
     dir, log,
-    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OPENAI_CUA_APP: path.join(dir, "ChatGPT.app"), OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
-      OPENAI_CUA_RESTORE_FOCUS: "0", OPENAI_CUA_APPROVAL: "", ...env },
+    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OAI_CUA_APP: path.join(dir, "ChatGPT.app"), OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
+      OAI_CUA_RESTORE_FOCUS: "0", OAI_CUA_APPROVAL: "", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -205,8 +205,8 @@ describe("tools", () => {
     expect(sb.events().filter((e) => e.ev === "audio-elicit").map((e) => e.action)).toEqual(["decline", "accept", "decline"]);
   });
 
-  test("audio: OPENAI_CUA_AUDIO=0 disables it; oversize WAV and old protocols skip inline audio", async () => {
-    const off = sandbox({ OPENAI_CUA_AUDIO: "0" }), s = startShim(off);
+  test("audio: OAI_CUA_AUDIO=0 disables it; oversize WAV and old protocols skip inline audio", async () => {
+    const off = sandbox({ OAI_CUA_AUDIO: "0" }), s = startShim(off);
     await s.init();
     const r = await s.call("start_audio_recording", {});
     expect(r.isError).toBe(true);
@@ -276,22 +276,22 @@ describe("guidance", () => {
     expect(init.capabilities.prompts).toBeDefined();
     const ins = init.instructions;
     expect(ins.length).toBeLessThanOrEqual(4096);
-    for (const t of ["get_app_state", "osascript", "Helium", "ALWAYS-CONFIRM-RULE", "HAND-OFF-RULE", "SCOPE-RULE", "Omitted for length", "openai-cua://engine/first-use"]) expect(ins).toContain(t);
+    for (const t of ["get_app_state", "osascript", "Helium", "ALWAYS-CONFIRM-RULE", "HAND-OFF-RULE", "SCOPE-RULE", "Omitted for length", "oai-cua://engine/first-use"]) expect(ins).toContain(t);
     const uris = (await s.rpc("resources/list", {})).result.resources.map((r) => r.uri);
-    expect(uris).toContain("openai-cua://cua/docs/tinysky-alt-confirmations.md");
-    expect(uris).toContain("openai-cua://sky/docs/sky-window-api.md");
-    expect(uris).toContain("openai-cua://plugins/computer-use/skills/computer-use/SKILL.md");
-    expect(uris).toContain("openai-cua://plugins/computer-use/plugin.json");
+    expect(uris).toContain("oai-cua://cua/docs/tinysky-alt-confirmations.md");
+    expect(uris).toContain("oai-cua://sky/docs/sky-window-api.md");
+    expect(uris).toContain("oai-cua://plugins/computer-use/skills/computer-use/SKILL.md");
+    expect(uris).toContain("oai-cua://plugins/computer-use/plugin.json");
     expect(uris.some((u) => /linux|win\.md/.test(u))).toBe(false); // macOS only
     const read = async (uri) => (await s.rpc("resources/read", { uri })).result?.contents[0].text;
-    expect(await read("openai-cua://plugins/computer-use/skills/computer-use/SKILL.md")).toBe("CODEX-SKILL"); // newest version wins
-    expect(await read("openai-cua://bridge/guide")).toContain("get_app_state ← ");
-    expect(await read("openai-cua://engine/first-use")).toContain("CORE-DOC"); // before the engine ran: same files it reads
-    expect((await s.rpc("resources/read", { uri: "openai-cua://nope" })).error.code).toBe(-32002);
+    expect(await read("oai-cua://plugins/computer-use/skills/computer-use/SKILL.md")).toBe("CODEX-SKILL"); // newest version wins
+    expect(await read("oai-cua://bridge/guide")).toContain("get_app_state ← ");
+    expect(await read("oai-cua://engine/first-use")).toContain("CORE-DOC"); // before the engine ran: same files it reads
+    expect((await s.rpc("resources/read", { uri: "oai-cua://nope" })).error.code).toBe(-32002);
     const prompts = (await s.rpc("prompts/list", {})).result.prompts.map((p) => p.name);
     expect(prompts).toEqual(["computer-use", "confirmation-policy"]);
     const cu = (await s.rpc("prompts/get", { name: "computer-use", arguments: { task: "TASK-X" } })).result.messages[0].content.text;
-    for (const t of ["CORE-DOC", "CODEX-SKILL", "TASK-X", "these openai-computer-use tools"]) expect(cu).toContain(t);
+    for (const t of ["CORE-DOC", "CODEX-SKILL", "TASK-X", "these oai-cua tools"]) expect(cu).toContain(t);
     expect((await s.rpc("prompts/get", { name: "confirmation-policy" })).result.messages[0].content.text).toContain("ALWAYS-CONFIRM-RULE");
     expect(spawns(sb).length).toBe(0); // none of this starts the engine
   });
@@ -302,7 +302,7 @@ describe("guidance", () => {
     expect(ins).toContain("not found in the installed app");
     expect(ins).toContain("Confirm with the user");
     expect((await s.rpc("prompts/get", { name: "confirmation-policy" })).error.code).toBe(-32602);
-    expect((await s.rpc("resources/read", { uri: "openai-cua://engine/first-use" })).error.code).toBe(-32002);
+    expect((await s.rpc("resources/read", { uri: "oai-cua://engine/first-use" })).error.code).toBe(-32002);
     expect((await s.rpc("resources/list", {})).result.resources.length).toBe(2);
   });
 
@@ -317,7 +317,7 @@ describe("guidance", () => {
     const r2 = await s.call("get_app_state", { app: "TextEdit" });
     expect(textOf(r2)).toBe("No change in the accessibility tree since your last observation of TextEdit; all element indices are still valid."); // REPL "declared with const" warnings are not docs
     expect(textOf(await s.call("get_app_state", { app: "TextEdit", mode: "text" }))).toBe(FULL); // docs only once
-    expect((await s.rpc("resources/read", { uri: "openai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
+    expect((await s.rpc("resources/read", { uri: "oai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
   });
 
   test("docs a REPL prints mid-session (reset) are captured from before the cell's start marker", async () => {
@@ -472,7 +472,7 @@ describe("batch", () => {
 });
 
 describe("run_cua_js", () => {
-  const jsSb = (env = {}) => sandbox({ OPENAI_CUA_ENABLE_JS: "1", ...env });
+  const jsSb = (env = {}) => sandbox({ OAI_CUA_ENABLE_JS: "1", ...env });
 
   test("disabled by default: not listed, refused with how to enable", async () => {
     const sb = sandbox(), s = startShim(sb);
@@ -481,7 +481,7 @@ describe("run_cua_js", () => {
     const names = (await s.rpc("tools/list", {})).result.tools.map((t) => t.name);
     expect(names).not.toContain("run_cua_js");
     expect(names).not.toContain("reset_repl");
-    expect(textOf(await s.call("run_cua_js", { code: "1" }))).toContain("OPENAI_CUA_ENABLE_JS=1");
+    expect(textOf(await s.call("run_cua_js", { code: "1" }))).toContain("OAI_CUA_ENABLE_JS=1");
     expect(textOf(await s.call("reset_repl", {}))).toContain("disabled");
     expect(spawns(sb).length).toBe(0);
   });
@@ -558,7 +558,7 @@ describe("lifecycle", () => {
   });
 
   test("missing runtime gives a clear error without crashing", async () => {
-    const sb = sandbox({ OPENAI_CUA_MCP_JSON: "/nonexistent/mcp.json" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_MCP_JSON: "/nonexistent/mcp.json" }), s = startShim(sb);
     await s.init();
     const r = await s.call("list_apps");
     expect(r.isError).toBe(true);
@@ -567,7 +567,7 @@ describe("lifecycle", () => {
   });
 
   test("idle release never interrupts an active call; next call restarts", async () => {
-    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "150", FAKE_CELL_DELAY_MS: "450" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_IDLE_MS: "150", FAKE_CELL_DELAY_MS: "450" }), s = startShim(sb);
     await s.init();
     expect((await s.call("list_apps")).isError).toBeUndefined();
     await sleep(400);
@@ -577,7 +577,7 @@ describe("lifecycle", () => {
   });
 
   test("a retired engine's late exit cannot affect its in-flight replacement", async () => {
-    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "100", FAKE_SLOW_EXIT_MS: "300", FAKE_CELL_DELAY_MS: "500" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_IDLE_MS: "100", FAKE_SLOW_EXIT_MS: "300", FAKE_CELL_DELAY_MS: "500" }), s = startShim(sb);
     await s.init();
     await s.call("list_apps");
     await sleep(200); // idle fired at ~100ms; old engine exits ~300ms later
@@ -606,7 +606,7 @@ describe("lifecycle", () => {
   });
 
   test("hung engine times out and is replaced", async () => {
-    const sb = sandbox({ FAKE_HANG: "1", OPENAI_CUA_CALL_TIMEOUT_MS: "200" }), s = startShim(sb);
+    const sb = sandbox({ FAKE_HANG: "1", OAI_CUA_CALL_TIMEOUT_MS: "200" }), s = startShim(sb);
     await s.init();
     const t = Date.now();
     const r = await s.call("list_apps");
@@ -655,7 +655,7 @@ describe("lifecycle", () => {
   });
 
   test("an audio recording keeps the engine from idle release until it is stopped", async () => {
-    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "150" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_IDLE_MS: "150" }), s = startShim(sb);
     await s.init();
     await s.call("start_audio_recording", { max_duration_ms: 100 }); // kept for 100 ms + 5 s grace
     await sleep(450);
@@ -700,37 +700,37 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
   }
 
   test("installs with argv only (no shell expansion), persists env, denies native CU, removes legacy worker", () => {
-    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "1234" });
+    const sb = sandbox({ OAI_CUA_IDLE_MS: "1234" });
     const { bin, calls } = fakeBin(sb);
     const repo = repoCopy(sb, "repo-$(touch INJECTED)");
     const cfg = path.join(sb.dir, "claude-cfg");
     fs.mkdirSync(cfg);
     fs.writeFileSync(path.join(cfg, "settings.json"), JSON.stringify({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }] }), { mode: 0o600 });
-    fs.mkdirSync(path.join(cfg, "skills/openai-computer-use"), { recursive: true });
-    fs.writeFileSync(path.join(cfg, "skills/openai-computer-use/SKILL.md"), "OLD USER SKILL");
+    fs.mkdirSync(path.join(cfg, "skills/oai-cua"), { recursive: true });
+    fs.writeFileSync(path.join(cfg, "skills/oai-cua/SKILL.md"), "OLD USER SKILL");
     const r = spawnSync(NODE, [path.join(repo, "install.mjs")], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
     expect(r.status).toBe(0);
     expect(fs.existsSync(path.join(sb.dir, "INJECTED"))).toBe(false);
     const add = calls().find((c) => c.cmd === "claude" && c.a[1] === "add-json");
     const spec = JSON.parse(add.a[5]);
     expect(spec.args).toEqual([path.join(fs.realpathSync(repo), "src/shim.mjs")]);
-    expect(spec.env.OPENAI_CUA_IDLE_MS).toBe("1234");
-    expect(spec.env.OPENAI_CUA_MCP_JSON).toBe(sb.env.OPENAI_CUA_MCP_JSON);
+    expect(spec.env.OAI_CUA_IDLE_MS).toBe("1234");
+    expect(spec.env.OAI_CUA_MCP_JSON).toBe(sb.env.OAI_CUA_MCP_JSON);
     expect(fs.statSync(path.join(cfg, "settings.json")).mode & 0o777).toBe(0o600);
     const settings = JSON.parse(fs.readFileSync(path.join(cfg, "settings.json"), "utf8"));
     expect(settings).toEqual({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }, { serverName: "computer-use" }] });
     expect(calls().some((c) => c.cmd === "codex" && c.a[1] === "remove" && c.a[2] === "openai-cua-worker")).toBe(true);
     expect(fs.readdirSync(path.join(sb.dir, "state/backups")).length).toBeGreaterThan(0);
-    const skill = path.join(cfg, "skills/openai-computer-use");
-    expect(fs.realpathSync(skill)).toBe(fs.realpathSync(path.join(repo, "skills/openai-computer-use")));
-    const saved = fs.readdirSync(path.join(sb.dir, "state/backups")).find((f) => f.startsWith("skills-openai-computer-use."));
+    const skill = path.join(cfg, "skills/oai-cua");
+    expect(fs.realpathSync(skill)).toBe(fs.realpathSync(path.join(repo, "skills/oai-cua")));
+    const saved = fs.readdirSync(path.join(sb.dir, "state/backups")).find((f) => f.startsWith("skills-oai-cua."));
     expect(fs.readFileSync(path.join(sb.dir, "state/backups", saved, "SKILL.md"), "utf8")).toBe("OLD USER SKILL");
     const again = spawnSync(NODE, [path.join(repo, "install.mjs"), "--skip-live"], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
     expect(again.stdout).toContain("already linked");
   });
 
   test("failed preflight (missing runtime, bad settings) changes nothing", () => {
-    for (const [env, settings] of [[{ OPENAI_CUA_MCP_JSON: "/nonexistent/mcp.json" }, "{}"], [{}, "null"], [{}, "{oops"], [{}, '{"deniedMcpServers":{}}']]) {
+    for (const [env, settings] of [[{ OAI_CUA_MCP_JSON: "/nonexistent/mcp.json" }, "{}"], [{}, "null"], [{}, "{oops"], [{}, '{"deniedMcpServers":{}}']]) {
       const sb = sandbox(env);
       const { bin, calls } = fakeBin(sb);
       const cfg = path.join(sb.dir, "claude-cfg");
@@ -750,7 +750,7 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     const cfg = path.join(sb.dir, "claude-cfg");
     fs.mkdirSync(cfg);
     const old = { type: "stdio", command: "/old/node", args: ["/old/shim.mjs"], env: {} };
-    fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "openai-computer-use": old } }));
+    fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "oai-cua": old } }));
     fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
     const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live"], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
     expect(r.status).toBe(1);
@@ -758,6 +758,23 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     const adds = calls().filter((c) => c.a[1] === "add-json");
     expect(JSON.parse(adds.at(-1).a[5])).toEqual(old);
     expect(fs.readFileSync(path.join(cfg, "settings.json"), "utf8")).toBe("{}");
+  });
+  test("migrates the pre-rename registration, skill link and env names", () => {
+    const sb = sandbox({ OPENAI_CUA_IDLE_MS: "4321" }); // pre-rename env name
+    const { bin, calls } = fakeBin(sb);
+    const cfg = path.join(sb.dir, "claude-cfg");
+    fs.mkdirSync(path.join(cfg, "skills"), { recursive: true });
+    fs.writeFileSync(path.join(cfg, "settings.json"), "{}");
+    fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "openai-computer-use": { env: { OPENAI_CUA_ENABLE_JS: "1" } } } })); // pre-rename
+    const oldLink = path.join(cfg, "skills/openai-computer-use"); // pre-rename
+    fs.symlinkSync(path.join(ROOT, "skills/openai-computer-use"), oldLink); // pre-rename
+    const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live"], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
+    expect(r.status).toBe(0);
+    const spec = JSON.parse(calls().find((c) => c.a[1] === "add-json").a[5]);
+    expect(spec.env).toMatchObject({ OAI_CUA_IDLE_MS: "4321", OAI_CUA_ENABLE_JS: "1" });
+    expect(calls().some((c) => c.a[1] === "remove" && c.a.at(-1) === "openai-computer-use")).toBe(true); // pre-rename
+    expect(fs.lstatSync(oldLink, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.realpathSync(path.join(cfg, "skills/oai-cua"))).toBe(fs.realpathSync(path.join(ROOT, "skills/oai-cua")));
   });
   test("--enable-js opts in, a later plain install keeps it, --disable-js removes it", () => {
     const sb = sandbox();
@@ -769,8 +786,8 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
       const r = spawnSync(NODE, [path.join(ROOT, "install.mjs"), "--skip-live", ...flags], { encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
       expect(r.status).toBe(0);
       const spec = JSON.parse(calls().filter((c) => c.a[1] === "add-json").at(-1).a[5]);
-      fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "openai-computer-use": spec } }));
-      return spec.env.OPENAI_CUA_ENABLE_JS;
+      fs.writeFileSync(path.join(cfg, ".claude.json"), JSON.stringify({ mcpServers: { "oai-cua": spec } }));
+      return spec.env.OAI_CUA_ENABLE_JS;
     };
     expect(install()).toBeUndefined();
     expect(install("--enable-js")).toBe("1");

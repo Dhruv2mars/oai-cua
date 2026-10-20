@@ -21,13 +21,13 @@ export class NativeError extends Error {
 
 // Returns { command, args } for `SkyComputerUseClient <sub...>`, or throws NativeError.
 export function findNativeLaunch(sub) {
-  const client = process.env.OPENAI_CUA_NATIVE_CLIENT ||
+  const client = process.env.OAI_CUA_NATIVE_CLIENT ||
     path.join(CODEX_HOME, "computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient");
-  const parent = process.env.OPENAI_CUA_NATIVE_PARENT || path.join(CHATGPT_APP, "Contents/Resources/cua_node/bin/node");
-  const python = process.env.OPENAI_CUA_PYTHON || PYTHONS.find((p) => fs.existsSync(p));
+  const parent = process.env.OAI_CUA_NATIVE_PARENT || path.join(CHATGPT_APP, "Contents/Resources/cua_node/bin/node");
+  const python = process.env.OAI_CUA_PYTHON || PYTHONS.find((p) => fs.existsSync(p));
   const missing = [[client, "SkyComputerUseClient (enable Computer Use in ChatGPT once)"], [parent, "ChatGPT.app's cua_node"]].find(([p]) => !fs.existsSync(p));
   if (missing) throw new NativeError(`${missing[1]} not found at ${missing[0]}`, "NATIVE_MISSING");
-  if (!python) throw new NativeError(`python3 not found (looked in ${PYTHONS.join(", ")}); install Xcode Command Line Tools or set OPENAI_CUA_PYTHON`, "NATIVE_MISSING");
+  if (!python) throw new NativeError(`python3 not found (looked in ${PYTHONS.join(", ")}); install Xcode Command Line Tools or set OAI_CUA_PYTHON`, "NATIVE_MISSING");
   // The signed node's only job is to be the client's parent; argv is embedded as JSON literals.
   const inner = `const c = require("child_process").spawn(${JSON.stringify(client)}, ${JSON.stringify(sub)}, { stdio: "inherit" });
 process.on("SIGTERM", () => c.kill("SIGTERM")); c.on("exit", (x, s) => process.exit(x ?? 1)); c.on("error", () => process.exit(127));`;
@@ -92,7 +92,7 @@ export class NativeServer {
     exited.catch(() => {});
     p.on("error", (e) => this.log(`native spawn error: ${e.message}`));
     this.#ready = Promise.race([exited, (async () => {
-      const r = await this.#request("initialize", { protocolVersion: "2025-06-18", capabilities: this.canElicit() ? { elicitation: {} } : {}, clientInfo: { name: "openai-cua-bridge", version: "0" } }, 20000);
+      const r = await this.#request("initialize", { protocolVersion: "2025-06-18", capabilities: this.canElicit() ? { elicitation: {} } : {}, clientInfo: { name: "oai-cua", version: "0" } }, 20000);
       if (r.error) throw new NativeError(`native initialize failed: ${r.error.message}`, "NATIVE_INIT");
       writeLine(p.stdin, { jsonrpc: "2.0", method: "notifications/initialized" });
     })()]).catch((e) => { this.stop("init failed"); throw e; });

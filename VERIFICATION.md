@@ -1,5 +1,9 @@
 # Verification — v0.2 (2026-10-19)
 
+> Project renamed to oai-cua on 2026-10-20. Names below were updated to the
+> new ones (server `oai-cua`, `OAI_CUA_*`, `~/.oai-cua`). The runs themselves
+> used the pre-rename names (openai-cua-bridge, openai-computer-use, OPENAI_CUA_*).
+
 **Machine:** macOS (Darwin 25.6.0). Claude Code 2.1.303, work profile
 `CLAUDE_CONFIG_DIR=~/.claude-work`, running under T3 Code.
 **OpenAI side:** ChatGPT.app 26.1013.40934 is installed, but its main process
@@ -53,8 +57,8 @@ failed:
 
 | Check | Result |
 | --- | --- |
-| Installer | Preflight ran a live `list_apps` (650ms). It then registered the shim (`claude mcp get` reports connected), denied `computer-use` (`switchModelsOnFlag:false` and the other settings were kept), removed `openai-cua-worker` from `~/.codex/config.toml`, and stopped 3 legacy workers. Backups are `0600` in `~/.openai-cua-bridge/backups`. |
-| Fresh `claude -p` session, work profile | `mcp_servers: openai-computer-use connected`. All 10 tools are present with real schemas; Claude reported that `type_text` requires `app` and `text`. `get_app_state(TextEdit)` returned the AX tree and 1 image. click, `press_key super+Down` and `type_text " \| claude-e2e ✓ 42"` landed in the fixture, confirmed by AppleScript reading the document. |
+| Installer | Preflight ran a live `list_apps` (650ms). It then registered the shim (`claude mcp get` reports connected), denied `computer-use` (`switchModelsOnFlag:false` and the other settings were kept), removed `openai-cua-worker` from `~/.codex/config.toml`, and stopped 3 legacy workers. Backups are `0600` in `~/.oai-cua/backups`. |
+| Fresh `claude -p` session, work profile | `mcp_servers: oai-cua connected`. All 10 tools are present with real schemas; Claude reported that `type_text` requires `app` and `text`. `get_app_state(TextEdit)` returned the AX tree and 1 image. click, `press_key super+Down` and `type_text " \| claude-e2e ✓ 42"` landed in the fixture, confirmed by AppleScript reading the document. |
 | Background behaviour | Two sessions ran at the same time, about 20 actions including 9 clicks, and cold-launched Calculator. Across 916 samples at 50 Hz in that window, the cursor had **0 position changes** and the frontmost app stayed **Helium**. Frontmost was also Helium in all 4,500 samples over 110 s. Earlier probes: a coordinate click left 150 cursor samples unchanged. |
 | Concurrent apps | Session A appended " \| session-A" to the TextEdit fixture. Session B computed 12+30 = **42** in Calculator by clicking buttons. Their calls interleaved between 18:17:06 and 18:17:18Z, each on its own engine. |
 | Unicode | Engine `typeText` dropped `é`, `日` and `ü`, so the bridge pastes non-ASCII text. `ünïcödé 日本 ✓` arrived intact, and the clipboard hash was unchanged before and after the paste. |
@@ -250,7 +254,7 @@ dir (`fakeInstall`), so they don't depend on this Mac:
 - First `list_apps` (1.5 s, cold engine; after rebase on #2): item 0 is a 23,982-character
   first-use block (OpenAI's `## Computer Use` docs + confirmation policy, after
   our mapping note). The second call has no docs block.
-  `openai-cua://engine/first-use` then returns the engine’s 22,410-character
+  `oai-cua://engine/first-use` then returns the engine’s 22,410-character
   text.
 - Bug found live and fixed: the persistent REPL's redeclaration warnings were
   being taken for first-use docs, so docs were re-sent and the resource was
@@ -262,14 +266,14 @@ The model answered:
 
 1. Quoting instructions: "Never open or operate Google Chrome; the only browser
    allowed is Helium."
-2. "27 resources from the openai-computer-use server."
+2. "27 resources from the oai-cua server."
 3. Read the policy resource: "# Computer Use Confirmations Policy".
 4. Called `list_apps`: the first line was "[First-use documentation from
    OpenAI's installed computer-use engine, shown once per session; …]", and it
    "contained documentation about the cua API".
 
 A second fresh session, with the skill symlinked into a scratch project's
-`.claude/skills`, found and invoked `openai-computer-use` and quoted its
+`.claude/skills`, found and invoked `oai-cua` and quoted its
 "Helium is the only browser" rule. The installer was not run against the real
 profile, because it would re-point the registered server at this worktree.
 After merge, `node install.mjs` from the main checkout links the skill.
@@ -395,7 +399,7 @@ used only for the features cua-repl lacks (below).
 
 ## Computer History (Skysight): reachable, exposed only on opt-in
 
-- Live reads, with the tools enabled by `OPENAI_CUA_COMPUTER_HISTORY=1`:
+- Live reads, with the tools enabled by `OAI_CUA_COMPUTER_HISTORY=1`:
   `computer_history_status` →
   `{"state":"stopped","eventStreamRootPath":"~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight"}`.
   `computer_history_get_settings` → empty allow and block lists, with both
@@ -515,7 +519,7 @@ form page. Frontmost app before → after was recorded around **every** call:
 | user tab rules | read OK; click refused until claim; claim → `[claimed]` |
 | cleanup | `closed t2, t3, t4; kept none; released t1`; only `about:blank` left |
 | session end | open tab then stdin EOF: shim exited in 7ms, tab closed (only `about:blank` left) |
-| non-Helium port | `OPENAI_CUA_HELIUM_CDP` → a Node listener: `refusing node (no bundle id): only Helium is allowed`, no CDP sent |
+| non-Helium port | `OAI_CUA_HELIUM_CDP` → a Node listener: `refusing node (no bundle id): only Helium is allowed`, no CDP sent |
 
 Two defects found live and fixed before the final probe:
 
@@ -700,8 +704,8 @@ in-process units. They cover:
 | Bundle-id retry | The engine rejects `"Chess "` (`Invalid app: Chess `). The shim's `get_app_state("Chess ")` returned Chess's tree and screenshot through `com.apple.Chess`. |
 | `stop_app` | `Stopped Chess (com.apple.Chess).` in 12–22 ms. The next `get_app_state` worked (292 ms), because the turn ended right after the stop. `stop_app({})` stopped every app used. |
 | User stop | A second engine stopped Chess the way the menu bar does. The shim's next `press_key` returned the service text plus "The user stopped Computer Use for this app. Stop working on it now and hand back…". |
-| Turn lifecycle | Log: `turn 1 ends: stop_app` → `engine#1 turn 1 ended`; `turn 3 ends: idle` after 1.5 s of quiet (`OPENAI_CUA_TURN_IDLE_MS=1500`). |
-| Focus restore (Helium ⌘T, sampled every 100 ms) | `OPENAI_CUA_RESTORE_FOCUS=0`: Helium frontmost for **1644 ms** (16 of 93 samples). Default (on): **1 sample (~100 ms)**. The log shows `net.imput.helium took the front; re-activated com.t3tools.t3code (ok, 74ms)`, mid-action, before `press_key` returned. With only a check after the action (first version), the steal lasted 620 ms. |
+| Turn lifecycle | Log: `turn 1 ends: stop_app` → `engine#1 turn 1 ended`; `turn 3 ends: idle` after 1.5 s of quiet (`OAI_CUA_TURN_IDLE_MS=1500`). |
+| Focus restore (Helium ⌘T, sampled every 100 ms) | `OAI_CUA_RESTORE_FOCUS=0`: Helium frontmost for **1644 ms** (16 of 93 samples). Default (on): **1 sample (~100 ms)**. The log shows `net.imput.helium took the front; re-activated com.t3tools.t3code (ok, 74ms)`, mid-action, before `press_key` returned. With only a check after the action (first version), the steal lasted 620 ms. |
 
 **After the rebase** the live probes were re-run against the rebased shim:
 

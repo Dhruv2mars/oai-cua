@@ -1,5 +1,9 @@
 # Project audit — 2026-10-19
 
+> Project renamed to oai-cua on 2026-10-20. Names below were updated to the
+> new ones (server `oai-cua`, `OAI_CUA_*`, `~/.oai-cua`). The runs themselves
+> used the pre-rename names (openai-cua-bridge, openai-computer-use, OPENAI_CUA_*).
+
 **Verdict: the scaffolding and registration work is largely complete; the bridge
 does not meet the requested reliable, ready-to-use standard. The current live
 installation failed a read-only engine call.**
@@ -206,6 +210,6 @@ drives that runtime directly. Evidence is in VERIFICATION.md.
 | 9 Fallback schemas / list_changed | Inapplicable / fixed | Complete static schemas are always served. There is no cache and nothing to refresh. |
 | 10 Shim timers delay exit | Fixed | Request timers are cleared on settle. On stdin EOF or a signal, the shim stops the engine and exits explicitly. Test: EOF exit in under 1s and engine gone. |
 | 11 Preflight still mutates | Fixed | All checks run, including a live engine call, before any write. Test: failed preflight leaves files untouched and makes no `claude mcp` calls. |
-| 12 Env overrides not persisted | Fixed | `CODEX_HOME` and `OPENAI_CUA_*` are written into the registration's `env`. Test asserts this. |
+| 12 Env overrides not persisted | Fixed | `CODEX_HOME` and `OAI_CUA_*` are written into the registration's `env`. Test asserts this. |
 | State/socket permissions | Fixed | The state dir is `0700`, and the log and backups are `0600`. There is no socket. |
 | Native computer use routing | Fixed | `deniedMcpServers` entry for `computer-use`, a supported mechanism. Server `instructions` route GUI tasks. |

@@ -2,7 +2,7 @@
 // themselves when they receive it (Chromium browsers such as Helium do when a
 // tab is created). Around each mutating action the shim records the frontmost
 // app; if the target app took the front during the action, the previous app
-// is re-activated. OPENAI_CUA_RESTORE_FOCUS=0 turns this off.
+// is re-activated. OAI_CUA_RESTORE_FOCUS=0 turns this off.
 //
 // The frontmost-app reads and re-activation go through a tiny resident Swift
 // helper (src/focus-helper.swift, compiled once into the state dir). It also
@@ -42,7 +42,7 @@ const isAnyOf = (f, apps) => [].concat(apps).some((a) => isApp(f, a));
 
 export class FocusGuard {
   // `ops` ({ front, activate }) replaces the helper, for tests.
-  constructor({ log = () => {}, enabled = process.env.OPENAI_CUA_RESTORE_FOCUS !== "0", binDir = path.join(STATE_DIR, "bin"), ops = null } = {}) {
+  constructor({ log = () => {}, enabled = process.env.OAI_CUA_RESTORE_FOCUS !== "0", binDir = path.join(STATE_DIR, "bin"), ops = null } = {}) {
     Object.assign(this, { log, enabled, binDir, ops });
     this.proc = null;
     this.waiters = [];

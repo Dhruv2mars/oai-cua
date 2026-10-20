@@ -1,4 +1,4 @@
-# openai-cua-bridge
+# oai-cua
 
 Use OpenAI's **computer-use engine** (the one ChatGPT/Codex desktop uses) from
 **Claude Code** on macOS: screenshots, accessibility trees and real input, run
@@ -50,7 +50,7 @@ API. Arguments are embedded as JSON literals.
   step and reports which one failed, along with the state at that point.
   `screenshot: true` is a batch option there, not a step argument.
 - `run_cua_js` and `reset_repl` are opt in (`node install.mjs --enable-js`, or
-  `OPENAI_CUA_ENABLE_JS=1`). `run_cua_js` runs JavaScript in the engine's
+  `OAI_CUA_ENABLE_JS=1`). `run_cua_js` runs JavaScript in the engine's
   persistent REPL with the `cua` API, as Codex's `js` tool does. Top-level
   bindings persist across calls, and the bridge's own cells don't add any.
   `reset_repl` discards them. The REPL can import Node modules such as
@@ -80,17 +80,17 @@ API. Arguments are embedded as JSON literals.
   `include_audio: true` it also returns MCP audio content, up to 10 MB. The
   engine only registers audio when started with `SKY_ENABLE_AUDIO=1` and
   `NODE_REPL_ENABLE_AUDIO=1`. The shim sets both, unless
-  `OPENAI_CUA_AUDIO=0`. It considers the engine's "record computer audio"
+  `OAI_CUA_AUDIO=0`. It considers the engine's "record computer audio"
   approval only during a `start_audio_recording` call, through the approval
   flow below, and declines it at any other time. The engine is kept alive until the recording ends.
 - **Per-app approval.** The engine asks before it uses each app. The shim
   shows you that request through MCP elicitation, with the app, its bundle id,
   OpenAI's risk level and an "Always allow" choice. It asks once per app per
-  session. Always-allowed apps are saved in `~/.openai-cua-bridge/approvals.json`
+  session. Always-allowed apps are saved in `~/.oai-cua/approvals.json`
   (mode `0600`). Delete an entry to be asked again. Some clients advertise
   elicitation but answer it instantly with `cancel`, which headless Claude Code
   does in about 4 ms. For those clients, and for clients without elicitation,
-  `OPENAI_CUA_APPROVAL` decides:
+  `OAI_CUA_APPROVAL` decides:
   - `auto` (the default) accepts.
   - `prompt` shows a native macOS dialog.
   - `deny-unknown` declines apps that are not already allowed.
@@ -114,8 +114,8 @@ API. Arguments are embedded as JSON literals.
   background input. Helium does when it opens a tab. During each action the
   shim watches app activations. If the target app takes the front, it
   re-activates the app you were using within about 100 ms. This uses a small
-  Swift helper that is compiled once into `~/.openai-cua-bridge/bin`; without
-  `swiftc` it falls back to `osascript`. Set `OPENAI_CUA_RESTORE_FOCUS=0` to
+  Swift helper that is compiled once into `~/.oai-cua/bin`; without
+  `swiftc` it falls back to `osascript`. Set `OAI_CUA_RESTORE_FOCUS=0` to
   turn it off.
 - **Google Chrome is blocked.** Any app name matching `chrome` is refused, in
   every tool, batch step and script. App-access approval is declined when the
@@ -144,11 +144,11 @@ follow the newest installed version) and is never copied into this repo
   sections of OpenAI's confirmation policy (`tinysky-alt-confirmations.md`),
   within Claude Code's 4096-character cap. If the file is missing, a short
   policy of our own is used instead.
-- **Resources** (`openai-cua://…`): the cua docs, macOS sky docs and skills,
+- **Resources** (`oai-cua://…`): the cua docs, macOS sky docs and skills,
   the cua-repl tool texts, the Codex `computer-use` plugin skill, plugin
   manifests and `NODE_REPL_INSTRUCTIONS_*` strings. There is also
-  `openai-cua://bridge/guide`, which maps the cua API onto these tools, and
-  `openai-cua://engine/first-use`.
+  `oai-cua://bridge/guide`, which maps the cua API onto these tools, and
+  `oai-cua://engine/first-use`.
 - **Prompts:** `computer-use` (guide + first-use docs + Codex skill, with an
   optional task) and `confirmation-policy` (verbatim).
 - **First-use documentation:** a fresh engine prints its core docs and policy
@@ -156,7 +156,7 @@ follow the newest installed version) and is never copied into this repo
   restart, and puts it once per session at the front of the next tool result,
   with a note mapping OpenAI's tool names (`js`, `node_repl`) onto these tools.
 
-The Claude Code skill `skills/openai-computer-use/SKILL.md` (our own text)
+The Claude Code skill `skills/oai-cua/SKILL.md` (our own text)
 teaches the observe/act/verify loop, app targeting, newline caveats, the
 confirmation taxonomy and this setup's defaults: Helium only, never Chrome,
 delegate computer use to Haiku subagents, and no AppleScript/osascript/JXA/
@@ -184,12 +184,12 @@ responsible process may send it Apple Events. The shim therefore launches
 `python3 src/spawn-disclaimed.py` → ChatGPT's signed `cua_node` →
 `SkyComputerUseClient`. The python step disclaims responsibility. It needs
 python3 from Homebrew, `/usr/local` or the Xcode Command Line Tools, or set
-`OPENAI_CUA_PYTHON`. The client is released when idle, but not while a
+`OAI_CUA_PYTHON`. The client is released when idle, but not while a
 recording is running.
 
 ### Computer History (opt-in, off by default)
 
-Set `OPENAI_CUA_COMPUTER_HISTORY=1` to expose `computer_history_status`,
+Set `OAI_CUA_COMPUTER_HISTORY=1` to expose `computer_history_status`,
 `computer_history_get_settings`, `computer_history_update_settings`,
 `computer_history_pause` and `computer_history_resume`. Without it the tools
 are not listed, and the bridge never contacts the recorder.
@@ -220,7 +220,7 @@ and works on **background tabs**: Helium is never brought to the front.
 | `browser_navigate` | URL, back, forward or reload without focusing. The URL a tab already shows is not reloaded. |
 | `browser_snapshot` | Accessibility tree with stable refs (`[ref=e42]` = DOM backend node id). Diff against the previous snapshot by default. |
 | `browser_read` | Page text, paged by `offset`/`max_chars`. Works in background tabs. |
-| `browser_screenshot` | JPEG of the viewport, full page or one element (by ref). Also saved under `~/.openai-cua-bridge/screenshots/` (last 30 kept). |
+| `browser_screenshot` | JPEG of the viewport, full page or one element (by ref). Also saved under `~/.oai-cua/screenshots/` (last 30 kept). |
 | `browser_click` / `browser_type` / `browser_press_key` / `browser_select` | Input by ref or x/y. Any Unicode. Each action returns the snapshot diff, new tabs it opened, and any dialog it raised. |
 | `browser_upload_file` | Files into an `<input type=file>` without a file picker. |
 | `browser_handle_dialog` | Accept or dismiss alert/confirm/prompt/beforeunload. |
@@ -249,8 +249,8 @@ this browser instance*. No restart is needed. Helium then shows an
 browser tools return these instructions, and Helium can still be used through
 `get_app_state("Helium")`.
 
-Other endpoints: `OPENAI_CUA_HELIUM_CDP` (port or `ws://` URL) and
-`OPENAI_CUA_HELIUM_USER_DATA_DIR` (colon-separated profile dirs whose
+Other endpoints: `OAI_CUA_HELIUM_CDP` (port or `ws://` URL) and
+`OAI_CUA_HELIUM_USER_DATA_DIR` (colon-separated profile dirs whose
 `DevToolsActivePort` is read). Both still go through the Helium-only check.
 
 ### Engine lifecycle
@@ -275,7 +275,7 @@ ends. A late call from an ended turn is refused. MCP has no turn boundaries, so
 every call carries this session's turn id, and the shim ends the turn when one
 of these happens:
 
-- Claude makes no calls for `OPENAI_CUA_TURN_IDLE_MS` (default 60000; 0 disables
+- Claude makes no calls for `OAI_CUA_TURN_IDLE_MS` (default 60000; 0 disables
   this).
 - A call is cancelled, for example because you interrupted Claude.
 - `stop_app` runs. The app is then released without staying blocked.
@@ -306,41 +306,43 @@ bun run doctor          # live: runtime discovery + engine + list_apps timing
 The installer changes nothing unless every preflight passes. It then does five
 things:
 
-1. Registers the shim as user-scoped `openai-computer-use` in
+1. Registers the shim as user-scoped `oai-cua` in
    `$CLAUDE_CONFIG_DIR/.claude.json`, using argv with no shell. It persists any
-   `CODEX_HOME` and `OPENAI_CUA_*` overrides in the server's env.
+   `CODEX_HOME` and `OAI_CUA_*` overrides in the server's env. It then removes
+   the pre-rename `openai-computer-use` registration, if any.
 2. Adds `deniedMcpServers: [{serverName: "computer-use"}]` to
    `$CLAUDE_CONFIG_DIR/settings.json`, so Claude's built-in computer use can't
    claim GUI tasks. Pass `--keep-native` to skip this.
 3. Removes the v0.1 `openai-cua-worker` from the Codex config with
    `codex mcp remove`, and stops any legacy worker processes.
-4. Symlinks the skill to `$CLAUDE_CONFIG_DIR/skills/openai-computer-use`, so it
+4. Symlinks the skill to `$CLAUDE_CONFIG_DIR/skills/oai-cua`, so it
    follows the repo like the registered shim does. Anything already there is
-   backed up first. Pass `--skip-skill` to skip this.
+   backed up first. A pre-rename `skills/openai-computer-use` link into this
+   repo is removed. Pass `--skip-skill` to skip this.
 5. Writes `0600` backups of every file it changes to
-   `~/.openai-cua-bridge/backups/`. That directory is mode `0700`.
+   `~/.oai-cua/backups/`. That directory is mode `0700`.
 
 Already-running Claude sessions keep their old server process until you run
 `/mcp` → reconnect, or restart the session.
 
-Overrides:
+Overrides (the pre-rename `OPENAI_CUA_*` names are still read for one release):
 
-- `OPENAI_CUA_IDLE_MS`: idle release. Default 300000; 0 disables it.
-- `OPENAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
-- `OPENAI_CUA_AUDIO`: `0` turns computer-audio recording off.
-- `OPENAI_CUA_APPROVAL`: approval fallback, `auto` (default), `prompt` or
+- `OAI_CUA_IDLE_MS`: idle release. Default 300000; 0 disables it.
+- `OAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
+- `OAI_CUA_AUDIO`: `0` turns computer-audio recording off.
+- `OAI_CUA_APPROVAL`: approval fallback, `auto` (default), `prompt` or
   `deny-unknown`.
-- `OPENAI_CUA_TURN_IDLE_MS`: quiet time that ends a turn. Default 60000.
-- `OPENAI_CUA_RESTORE_FOCUS`: `0` disables focus restore.
-- `OPENAI_CUA_MCP_JSON`: path to a cua-repl manifest.
-- `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
-- `OPENAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
-- `CODEX_HOME`, `OPENAI_CUA_STATE_DIR`.
-- `OPENAI_CUA_COMPUTER_HISTORY=1`: expose the Computer History tools. Off by default.
-- `OPENAI_CUA_ENABLE_JS=1`: enables `run_cua_js` and `reset_repl`. The
+- `OAI_CUA_TURN_IDLE_MS`: quiet time that ends a turn. Default 60000.
+- `OAI_CUA_RESTORE_FOCUS`: `0` disables focus restore.
+- `OAI_CUA_MCP_JSON`: path to a cua-repl manifest.
+- `OAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
+- `OAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
+- `CODEX_HOME`, `OAI_CUA_STATE_DIR`.
+- `OAI_CUA_COMPUTER_HISTORY=1`: expose the Computer History tools. Off by default.
+- `OAI_CUA_ENABLE_JS=1`: enables `run_cua_js` and `reset_repl`. The
   installer sets it with `--enable-js` and removes it with `--disable-js`.
   Without either flag, it keeps the current registration's choice.
-- `OPENAI_CUA_PYTHON`, `OPENAI_CUA_NATIVE_CLIENT`, `OPENAI_CUA_NATIVE_PARENT`:
+- `OAI_CUA_PYTHON`, `OAI_CUA_NATIVE_CLIENT`, `OAI_CUA_NATIVE_PARENT`:
   the python3, `SkyComputerUseClient` and signed parent `node` used for the
   native client.
 

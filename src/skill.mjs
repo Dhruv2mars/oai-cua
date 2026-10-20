@@ -151,7 +151,7 @@ export function renderSkill({ name, description, summary, source }) {
   }
   L.push("## Before you start", "");
   if (apps.size) for (const [a, b] of apps) L.push(`- ${a}${b && b !== a ? ` (\`${b}\`)` : ""} must be available.`);
-  L.push("- Prefer a dedicated tool, CLI or API for a step when one exists; use the `openai-computer-use` tools for UI-only steps.", "");
+  L.push("- Prefer a dedicated tool, CLI or API for a step when one exists; use the `oai-cua` tools for UI-only steps.", "");
   L.push("## Steps", "");
   if (steps.length) steps.forEach((s, i) => L.push(`${i + 1}. ${s}`));
   else L.push("The recording had no replayable actions. Ask the user to describe the workflow.");

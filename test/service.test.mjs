@@ -23,8 +23,8 @@ function sandbox(env = {}) {
   return {
     dir, log,
     env: {
-      ...process.env, HOME: dir, OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: "/nonexistent/mcp.json",
-      OPENAI_CUA_NATIVE_CLIENT: client, OPENAI_CUA_NATIVE_PARENT: NODE, CLAUDE_CONFIG_DIR: path.join(dir, "claude"),
+      ...process.env, HOME: dir, OAI_CUA_STATE_DIR: path.join(dir, "state"), OAI_CUA_MCP_JSON: "/nonexistent/mcp.json",
+      OAI_CUA_NATIVE_CLIENT: client, OAI_CUA_NATIVE_PARENT: NODE, CLAUDE_CONFIG_DIR: path.join(dir, "claude"),
       FAKE_LOG: log, FAKE_EVENTS_DIR: path.join(dir, "rec"), ...env,
     },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
@@ -136,7 +136,7 @@ describe("record & replay", () => {
   });
 
   test("a missing native client is reported, and the shim stays up", async () => {
-    const sb = sandbox({ OPENAI_CUA_NATIVE_CLIENT: "/nonexistent/SkyComputerUseClient" }), s = startShim(sb);
+    const sb = sandbox({ OAI_CUA_NATIVE_CLIENT: "/nonexistent/SkyComputerUseClient" }), s = startShim(sb);
     await s.init();
     const r = await s.call("record_status");
     expect(r.isError).toBe(true);
@@ -156,8 +156,8 @@ describe("record & replay", () => {
 });
 
 describe("computer history (opt-in)", () => {
-  test("OPENAI_CUA_COMPUTER_HISTORY=1 exposes status, settings, pause and resume; schema is enforced", async () => {
-    const sb = sandbox({ OPENAI_CUA_COMPUTER_HISTORY: "1", FAKE_HISTORY_STATE: "running" }), s = startShim(sb);
+  test("OAI_CUA_COMPUTER_HISTORY=1 exposes status, settings, pause and resume; schema is enforced", async () => {
+    const sb = sandbox({ OAI_CUA_COMPUTER_HISTORY: "1", FAKE_HISTORY_STATE: "running" }), s = startShim(sb);
     await s.init();
     expect(await names(s)).toEqual(expect.arrayContaining(["computer_history_status", "computer_history_get_settings", "computer_history_update_settings", "computer_history_pause", "computer_history_resume"]));
     expect(JSON.parse(textOf(await s.call("computer_history_status"))).state).toBe("running");

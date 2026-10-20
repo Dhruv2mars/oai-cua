@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// openai-computer-use: a stdio MCP server for Claude Code that drives OpenAI's
+// oai-cua: a stdio MCP server for Claude Code that drives OpenAI's
 // installed computer-use engine (ChatGPT.app's cua-repl → SkyComputerUseService).
 // No OpenAI model is called and the ChatGPT app does not need to be running.
 //   node src/shim.mjs            MCP server (what Claude Code launches)
@@ -29,9 +29,9 @@ const focus = new FocusGuard({ log });  // undoes focus theft by the target app 
 
 // Turns. SkyComputerUseService scopes user stops to a turn and refuses late
 // calls from an ended turn. MCP has no turn boundary, so a turn ends when
-// Claude goes quiet (OPENAI_CUA_TURN_IDLE_MS, default 60s), when a call is
+// Claude goes quiet (OAI_CUA_TURN_IDLE_MS, default 60s), when a call is
 // cancelled (the user interrupted Claude), or after stop_app.
-const TURN_IDLE_MS = Number(process.env.OPENAI_CUA_TURN_IDLE_MS ?? 60000);
+const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
 const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0 };
 async function endTurn(why) {
   clearTimeout(turn.timer);
@@ -45,17 +45,17 @@ async function endTurn(why) {
 
 const engine = new Engine({
   log,
-  idleMs: Number(process.env.OPENAI_CUA_IDLE_MS ?? 300000),
-  callTimeoutMs: Number(process.env.OPENAI_CUA_CALL_TIMEOUT_MS ?? 60000),
-  audio: process.env.OPENAI_CUA_AUDIO !== "0",
+  idleMs: Number(process.env.OAI_CUA_IDLE_MS ?? 300000),
+  callTimeoutMs: Number(process.env.OAI_CUA_CALL_TIMEOUT_MS ?? 60000),
+  audio: process.env.OAI_CUA_AUDIO !== "0",
   approve: (params, signal) => approver.decide(params, signal),
   // session_id is what the service keys turns (and their stops) on.
   turnMeta: () => { turn.used = true; return { session_id: turn.thread, thread_id: turn.thread, turn_id: String(turn.n) }; },
 });
 const browser = new HeliumBrowser({ log });
 const browserTools = () => BROWSER_TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: true } }));
-const MARK = `⟦cua-bridge:${randomUUID()}⟧`;
-const START = `⟦cua-bridge-start:${randomUUID()}⟧`; // anything before it is REPL bootstrap output
+const MARK = `⟦oai-cua:${randomUUID()}⟧`;
+const START = `⟦oai-cua-start:${randomUUID()}⟧`; // anything before it is REPL bootstrap output
 
 // MCP audio content exists from protocol 2025-03-26 on.
 let clientProtocol = "2025-06-18";
@@ -67,7 +67,7 @@ const toClient = new Map();
 let toClientId = 0;
 function askClient(method, params, signal) {
   return new Promise((resolve, reject) => {
-    const id = `cua-bridge-${++toClientId}`;
+    const id = `oai-cua-${++toClientId}`;
     toClient.set(id, { resolve, reject });
     signal?.addEventListener("abort", () => { // the call that needed the answer is gone
       if (!toClient.delete(id)) return;
@@ -84,8 +84,8 @@ const elicitApproval = (r, signal) => askClient("elicitation/create", {
 }, signal);
 const service = createService({
   log,
-  idleMs: Number(process.env.OPENAI_CUA_IDLE_MS ?? 300000),
-  callTimeoutMs: Number(process.env.OPENAI_CUA_CALL_TIMEOUT_MS ?? 60000),
+  idleMs: Number(process.env.OAI_CUA_IDLE_MS ?? 300000),
+  callTimeoutMs: Number(process.env.OAI_CUA_CALL_TIMEOUT_MS ?? 60000),
   canElicit: () => !!clientCaps?.elicitation,
   elicit: (p) => askClient("elicitation/create", { message: String(p.message ?? ""), requestedSchema: p.requestedSchema ?? { type: "object", properties: {} } }),
 });
@@ -236,7 +236,7 @@ function serve() {
           return reply(m.id, {
             protocolVersion: clientProtocol,
             capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } },
-            serverInfo: { name: "openai-computer-use", version: VERSION },
+            serverInfo: { name: "oai-cua", version: VERSION },
             instructions: INSTRUCTIONS,
           });
         }
