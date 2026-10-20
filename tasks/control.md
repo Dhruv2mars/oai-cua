@@ -27,7 +27,7 @@ worktree's shim showing each capability, PR squash-merged to main.
 - [x] README + VERIFICATION
 - [x] live probe: approval, stop_app, takeover/diagnostics, Helium cmd+t focus sampler
 - [x] rebase onto main (#2–#6): re-ported onto structured payloads, focus guard handles batch targets, stop_app remembers resolved bundle ids
-- [ ] PR, check, squash-merge, link
+- [x] PR #9 opened + linked, check green, squash-merged
 
 ## Found along the way
 - [x] Turn metadata needs `session_id` (not just `thread_id`) for TurnEnded to clear a stop
