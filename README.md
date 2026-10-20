@@ -133,9 +133,11 @@ API. Arguments are embedded as JSON literals.
   elicitation but answer it themselves within milliseconds. No person answers
   that fast. An instant `cancel` (headless Claude Code, about 4 ms) always
   counts as "this client can't ask". An instant `decline` counts only under an
-  Agent SDK host (`CLAUDE_CODE_ENTRYPOINT=sdk-*`, e.g. T3 Code, about 2 ms),
+  Agent SDK host (`CLAUDE_CODE_ENTRYPOINT` `sdk-ts` or `sdk-py`, e.g. T3 Code, about 2 ms),
   whose Claude Code declines every prompt it can't show. Elsewhere it stays a
-  refusal, so an Elicitation hook that declines an app still works. For those
+  refusal, so an Elicitation hook that declines an app still works. If such a
+  host has its own deliberate decline rules, set `approval` to `prompt` or
+  `deny-unknown` so they aren't replaced by `auto`. For those
   clients, and for clients without elicitation, the `approval` option
   (`OAI_CUA_APPROVAL`) decides:
   - `auto` (the default) accepts.
@@ -326,8 +328,10 @@ until the engine's connection closes. You can only stop an app that has an
 active session, and `stop_app` leaves none. So if the first use of that app
 in a later turn still reports a stop, it's the shim's own. The shim then
 starts a fresh engine and retries the call once (by app name or bundle id).
-It never does this for a batch whose earlier steps already ran, or while an
-audio recording is running. Stops you make are always honoured.
+It never does this for a batch whose earlier steps already ran, while an
+audio recording is running, while a stop you made on any app is still in
+effect (a new engine would clear that too), or after `run_cua_js` (a script
+may have opened sessions you could stop). Stops you make are always honoured.
 
 At turn end, the shim sends the service's turn-ended request through a small
 trusted `node_repl` service of its own (`src/bridge-service.mjs`). That

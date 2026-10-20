@@ -234,6 +234,29 @@ describe("stop, takeover and turns", () => {
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
   });
 
+  test("a user stop on one app is never undone by the restart for another", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", FAKE_USER_STOP: "TextEdit", OAI_CUA_TURN_IDLE_MS: "0" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "Notes" });
+    await s.call("stop_app", { app: "Notes" });
+    // the failing step is TextEdit (the user's stop), not Notes (ours): no restart
+    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "b" } }] });
+    expect(textOf(r)).toContain("Batch stopped at step 1 of 2");
+    // Notes alone would qualify, but the user's TextEdit stop is live on this engine
+    expect(textOf(await s.call("get_app_state", { app: "Notes" }))).toContain("The user stopped Computer Use");
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
+  test("a stop_app record is dropped once run_cua_js runs", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await s.call("stop_app", { app: "TextEdit" });
+    await s.call("run_cua_js", { code: "nodeRepl.write('x')" });
+    expect((await s.call("get_app_state", { app: "TextEdit" })).isError).toBe(true);
+    expect(new Set(sb.events().map((e) => e.pid)).size).toBe(1);
+  });
+
   test("no restart while an audio recording holds the engine", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
     await s.init();

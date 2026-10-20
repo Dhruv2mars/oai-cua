@@ -747,7 +747,7 @@ without it (checked by reverting `src/` and rerunning).
 
 | Bug | Cause | Fix | Evidence |
 |---|---|---|---|
-| B1: every app declined in T3 Code, with no prompt | T3's Claude Code answers elicitation with `decline` in ~2–36 ms; only a fast `cancel` counted as "client can't ask" | A `cancel` under 250 ms, or a `decline` under 250 ms under an Agent SDK host (`CLAUDE_CODE_ENTRYPOINT=sdk-*`), uses the `approval` fallback. In the interactive CLI an instant decline (e.g. an Elicitation hook) stays a refusal | Test "an instant decline … falls back to the policy". Live: `client answered the approval prompt with decline in 2ms; using the fallback policy` → `com.apple.calculator … accept via policy auto` |
+| B1: every app declined in T3 Code, with no prompt | T3's Claude Code answers elicitation with `decline` in ~2–36 ms; only a fast `cancel` counted as "client can't ask" | A `cancel` under 250 ms, or a `decline` under 250 ms under an Agent SDK host (`CLAUDE_CODE_ENTRYPOINT` `sdk-ts`/`sdk-py`), uses the `approval` fallback. In the interactive CLI an instant decline (e.g. an Elicitation hook) stays a refusal | Test "an instant decline … falls back to the policy". Live: `client answered the approval prompt with decline in 2ms; using the fallback policy` → `com.apple.calculator … accept via policy auto` |
 | B2: an app stays "explicitly stopped by the user" after `stop_app` until the engine exits | The service sometimes keeps a stop past `TurnEnded` | Only for `stop_app`'s own stops (keyed by name and bundle id): if the first use of that app in a later turn still reports a stop, a fresh engine (`engine.recycle`, queued after pending cells) and one retry. Never for user stops, a batch whose earlier steps ran, or during an audio recording | Tests "a stop that outlives its turn…", "a user's stop is never overridden…", "…once per stop_app, and never re-runs batch steps", "a bundle id matches…", "no restart while an audio recording…" (fake `FAKE_STICKY_STOP`, `FAKE_USER_STOP`). Not reproduced live in 6 sequences (plain, after declines, audio decline, native client up, 12 consecutive stop/reuse turns, the acceptance run's exact order); in all of them the stop cleared at turn end |
 | B3: errors and stale output resent as "first-use docs"; tree printed twice | Everything ahead of a cell's start marker counted as docs, including the REPL's error and late output from an earlier cell | Only text from a `# Computer Use` heading on is docs; text that contains (or is contained in) docs already seen is not resent | Tests "an error ahead of the start marker…" and "FirstUse: docs once…". Live: an `Invalid app` error, then the next `get_app_state` had no docs block |
 | B4: `browser_open_tab` returned `(empty page)` | A new tab is a finished `about:blank` until the URL commits, so the load wait returned at once. New-tab links had the same path | Tabs (and new-tab links) open blank, then `Page.navigate`, then wait for that load | Fake CDP now models the late commit; 2 tests fail without the fix. Live, throwaway Helium (temp profile, `OAI_CUA_HELIUM_CDP=9333`): `Opened t1 … Title: Example Domain` in 546 ms |
@@ -758,4 +758,12 @@ could turn a deliberate instant decline into an approval, override a later
 user stop, re-run batch steps and kill an audio recording. All fixed as
 above; each has a test that fails on the first-round code.
 
-`bun run check`: 96 pass, 0 fail.
+A second review round found that a multi-app batch, a user stop on another
+app, `run_cua_js` and `stop_app` output parsing could still lead to a user
+stop being undone. Fixed: the restart keys on the failing step's app; it is
+skipped while any user stop is live on the engine; `run_cua_js` drops
+`stop_app` records; only `Stopped …` lines (any text item, display names with
+parentheses) create records; the SDK-host check is `sdk-ts`/`sdk-py` only.
+Two more tests, each failing on the round-2 code.
+
+`bun run check`: 98 pass, 0 fail.

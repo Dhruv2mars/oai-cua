@@ -48,16 +48,22 @@ async function endTurn(why) {
 // connection closes. The user can only stop an app that has an active session,
 // and stop_app leaves none, so if the first use of that app in a later turn
 // still reports a stop, it is ours outliving its turn: the engine is replaced
-// once and the call retried. Stops the user makes are always honoured.
-const ownStops = new Map(); // app name or bundle id → turn of its stop_app
+// once and the call retried. Stops the user makes are always honoured, so no
+// replacement happens while one is live on this engine (a new engine would
+// clear it too).
+const ownStops = new Map();  // app name or bundle id → turn of its stop_app
+const userStops = new Map(); // app → engine start (engine.starts) it was seen on
 const appKey = (a) => String(a).trim().toLowerCase();
-// "stopped" when the call failed on a stop before doing anything, "" otherwise.
-function stopFailure(name, r) {
-  if (r.isError) return diagnose(r.content[0]?.text)?.kind === "user-stopped" ? "stopped" : "";
+const userStopLive = () => engine.running && [...userStops.values()].includes(engine.starts);
+// For a call that failed because of a stop: the app it failed on and whether
+// it may be retried (nothing ran yet). null when it didn't fail on a stop.
+function stopFailure(name, args, r) {
   let fail;
-  try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail; } catch {}
-  if (diagnose(fail?.error)?.kind !== "user-stopped") return "";
-  return name === "batch" && fail.step > 1 ? "partial" : "stopped"; // earlier batch steps ran: never re-run them
+  if (r.isError) fail = { step: 1, error: r.content[0]?.text };
+  else try { fail = JSON.parse(extractOutput(r.content, MARK)?.[0]?.text ?? "").fail; } catch {}
+  if (diagnose(fail?.error)?.kind !== "user-stopped") return null;
+  if (name !== "batch") return { app: args.app, retry: true };
+  return { app: args.steps[fail.step - 1]?.args?.app ?? args.app, retry: fail.step === 1 }; // never re-run steps that ran
 }
 
 const engine = new Engine({
@@ -157,8 +163,9 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
-      const names = [args.app, ...[...String(r.content?.[0]?.text ?? "").matchAll(/^Stopped (.+?)(?: \((.+?)\))?\.$/gm)].flatMap((m) => [m[1], m[2]])];
-      for (const a of names.filter(Boolean)) ownStops.set(appKey(a), turn.n);
+      const text = r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      const stopped = [...text.matchAll(/^Stopped (.+?)(?: \(([^()]+)\))?\.$/gm)].flatMap((m) => [m[1], m[2]]);
+      if (stopped.length) for (const a of [args.app, ...stopped].filter(Boolean)) ownStops.set(appKey(a), turn.n);
       await endTurn("stop_app");
     }
     return r;
@@ -190,12 +197,14 @@ async function execute(name, args, signal) {
       const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
       const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
-      if (apps.length && name !== "stop_app" && name !== "run_cua_js") {
-        const keys = apps.map(appKey), stop = stopFailure(name, r);
-        if (!stop) keys.forEach((k) => ownStops.delete(k));
-        else if (stop === "stopped" && !recycled && keys.some((k) => ownStops.get(k) < turn.n) && !engine.recording) {
-          keys.forEach((k) => ownStops.delete(k)); // once per stop_app
-          log(`${apps.join(", ")} still stopped by an earlier turn's stop_app; restarting the engine`);
+      if (name === "run_cua_js") ownStops.clear(); // a script may have opened sessions the user can stop
+      else if (apps.length && name !== "stop_app") {
+        const stop = stopFailure(name, args, r), k = stop ? appKey(stop.app) : "";
+        if (!stop) for (const a of apps) { ownStops.delete(appKey(a)); userStops.delete(appKey(a)); }
+        else if (!(ownStops.get(k) < turn.n)) userStops.set(k, engine.starts);
+        else if (stop.retry && !recycled && !engine.recording && !userStopLive()) {
+          ownStops.delete(k); // once per stop_app
+          log(`${stop.app} still stopped by an earlier turn's stop_app; restarting the engine`);
           recycled = true;
           observations.forget();
           await engine.recycle("stale stop");

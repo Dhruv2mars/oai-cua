@@ -48,7 +48,7 @@ export function promptText(r) {
 }
 
 export class Approver {
-  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now, sdkHost = /^sdk/.test(process.env.CLAUDE_CODE_ENTRYPOINT ?? "") } = {}) {
+  constructor({ policy = process.env.OAI_CUA_APPROVAL, file = path.join(STATE_DIR, "approvals.json"), log = () => {}, dialog = nativeDialog, now = Date.now, sdkHost = /^sdk-(ts|py)$/.test(process.env.CLAUDE_CODE_ENTRYPOINT ?? "") } = {}) {
     this.policy = POLICIES.includes(policy) ? policy : "auto";
     if (policy && policy !== this.policy) log(`unknown OAI_CUA_APPROVAL=${policy}; using auto`);
     Object.assign(this, { file, log, dialog, now, sdkHost });
