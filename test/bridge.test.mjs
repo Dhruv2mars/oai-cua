@@ -22,7 +22,8 @@ function sandbox(env = {}) {
   fs.writeFileSync(log, "");
   return {
     dir, log,
-    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OPENAI_CUA_APP: path.join(dir, "ChatGPT.app"), OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "", ...env },
+    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OPENAI_CUA_APP: path.join(dir, "ChatGPT.app"), OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "",
+      OPENAI_CUA_RESTORE_FOCUS: "0", OPENAI_CUA_APPROVAL: "", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -72,7 +73,7 @@ describe("protocol", () => {
     expect(init.protocolVersion).toBe("2025-06-18");
     expect(init.instructions).toContain("get_app_state");
     const tools = (await s.rpc("tools/list", {})).result.tools;
-    expect(tools.map((t) => t.name).filter((n) => !n.startsWith("browser_")).sort()).toEqual(["batch", "click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_audio_recording", "type_text"]);
+    expect(tools.map((t) => t.name).filter((n) => !n.startsWith("browser_")).sort()).toEqual(["batch", "click", "drag", "get_app_state", "list_apps", "paste", "perform_secondary_action", "press_key", "record_start", "record_status", "record_stop", "recording_to_skill", "scroll", "select_text", "set_value", "start_audio_recording", "stop_app", "stop_audio_recording", "type_text"]);
     for (const t of tools) expect(t.inputSchema.properties).toBeDefined();
     for (const t of tools) expect(Object.keys(t).sort()).toEqual(["annotations", "description", "inputSchema", "name"]);
     for (const n of ["click", "type_text", "paste", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"])

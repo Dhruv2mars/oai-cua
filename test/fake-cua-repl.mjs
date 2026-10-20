@@ -9,6 +9,8 @@
 // FAKE_DOCS (first-use docs text; "" disables), FAKE_REPL_RESET (file path:
 // the REPL restarts once before the first bridge cell, printing FAKE_RESET_DOCS),
 // FAKE_TREE_FILE (JSON {app: tree} read on every capture), FAKE_NO_SHOT.
+// FAKE_TAKEOVER (first N actions fail with the service's "user changed" error),
+// FAKE_BY_ID (getApp only accepts bundle ids), FAKE_ERROR (getApp throws it).
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -32,7 +34,9 @@ function elicit(message, meta) {
     const id = nextServerId++;
     waiting.set(id, resolve);
     const bundle = /browser-link/.test(message) ? "com.google.Chrome" : "com.example.app"; // service resolves identity
-    send({ jsonrpc: "2.0", id, method: "elicitation/create", params: { message, _meta: meta ?? { tool_params: { app: bundle } }, requestedSchema: { type: "object", properties: {} } } });
+    send({ jsonrpc: "2.0", id, method: "elicitation/create", params: { message, _meta: meta ?? {
+      riskLevel: "high", subtitle: "Can read your documents", persist: ["session", "always"],
+      tool_params: { app: bundle }, tool_params_display: [{ name: "app", display_name: "App", value: "Example" }] }, requestedSchema: { type: "object", properties: {} } } });
   });
 }
 // Same shape as the real policy's audio approval request.
@@ -57,10 +61,12 @@ const treeOf = (name) => {
 const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable for fake."); return new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); };
 // Without disableDiffing the real engine answers with its own (shared-baseline) diff.
 const capture = (name, o, kind) => { record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
+let takeovers = Number(E.FAKE_TAKEOVER || 0);
 const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
     if (args[0] === "FAIL") throw new Error(`fake ${method} failure`);
+    if (takeovers > 0) { takeovers--; throw new Error(`The user changed '${name}'. Re-query the latest state with \`get_app_state\` before sending more actions.`); }
     if (method === "click" && E.FAKE_AUDIO_ELICIT_ON_CLICK) await audioApproval().catch(() => {});
   };
   return {
@@ -74,6 +80,12 @@ const app = (name) => {
 globalThis.nodeRepl = {
   write: (t) => out.push({ type: "text", text: String(t) }),
   emitImage: async (img) => out.push({ type: "image", mimeType: "image/jpeg", data: Buffer.from(img).toString("base64") }),
+  async rpc(service, msg) { // the bridge's trusted service
+    record({ ev: "rpc", service, msg });
+    if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
+    if (msg.type === "turnEnded") return {};
+    throw new Error(`unsupported cuabridge request: ${msg.type}`);
+  },
   ...(E.NODE_REPL_ENABLE_AUDIO === "1" ? { emitAudio: async (url) => out.push({ type: "audio", mimeType: "audio/wav", data: url.slice(url.indexOf(",") + 1) }) } : {}),
 };
 let recording = null;
@@ -106,8 +118,11 @@ let computer;
 const makeCua = () => ({
   computer: (computer = makeComputer()),
   async getState() { return E.FAKE_AUTH_FAIL ? { apps: [], errors: ["Native apps: Error: Sky Computer Use native pipe startup failed"] } : { apps: [] }; },
-  async listApps() { return [{ id: "com.apple.TextEdit", displayName: "TextEdit", isRunning: true, windows: [{ title: "fixture" }] }]; },
+  async listApps() { return [{ id: "com.apple.TextEdit", displayName: "TextEdit", isRunning: true, windows: [{ title: "fixture" }] }, { id: "net.imput.helium", displayName: "Helium", isRunning: true }]; },
   async getApp(name) {
+    record({ ev: "getApp", name });
+    if (E.FAKE_ERROR) throw new Error(E.FAKE_ERROR);
+    if (E.FAKE_BY_ID && !/^[a-z]+\.[a-z]+\./.test(name)) throw new Error("Computer Use server error -10010: Invalid app");
     await computer.get_app_state({ app: name, disableDiff: true });
     nodeRepl.write(`auto-emitted state for ${name}`); // real getApp emits state too
     return app(name);
@@ -132,7 +147,7 @@ async function handle(m) {
   }
   if (m.method === "tools/call" && m.params?.name === "js") {
     const { code, timeout_ms } = m.params.arguments;
-    record({ ev: "cell", timeout_ms, code: code.slice(0, 120) });
+    record({ ev: "cell", timeout_ms, code: code.slice(0, 120), turn: m.params._meta?.["x-codex-turn-metadata"] });
     if (E.FAKE_CRASH_ONCE && code.includes("__cb") && !fs.existsSync(E.FAKE_CRASH_ONCE)) { fs.writeFileSync(E.FAKE_CRASH_ONCE, ""); process.exit(3); }
     if (E.FAKE_HANG && code.includes("__cb")) return; // never answers
     if (code.includes("__cb")) await sleep(Number(E.FAKE_CELL_DELAY_MS || 0));
@@ -149,6 +164,10 @@ async function handle(m) {
       send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: e.message }, ...out], isError: true } });
     }
     return;
+  }
+  if (m.method === "tools/call" && m.params?.name === "turn_ended") {
+    record({ ev: "turn_ended", args: m.params.arguments });
+    return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: "{}" }] } });
   }
   if (m.method === "tools/call" && m.params?.name === "js_reset") {
     record({ ev: "js_reset" });

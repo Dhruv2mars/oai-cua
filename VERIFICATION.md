@@ -636,3 +636,99 @@ probed live again on a fresh scratch doc. These all held:
 - REPL bindings survived a `screenshot` observation
 - `reset_repl` cleared them
 - the frontmost app stayed T3 Code
+
+# Control, safety and reliability (2026-10-20, branch `parity/control`)
+
+**Setup:** macOS 26.6.2 with ChatGPT.app installed (cua-repl 0.2.6). The tests
+drove this worktree's `src/shim.mjs` over stdio JSON-RPC with a probe client.
+Live targets were limited to Chess (not used by other threads), a scratch
+TextEdit file `/tmp/control-probe/control-scratch.txt` (closed afterwards
+without saving), and a new Helium tab that each run opened with ⌘T and closed
+with ⌘W. All three of the user's existing Helium tabs and their selection were
+the same before and after.
+
+## Automated
+
+After rebasing onto main (with #2–#6 merged), `bun run check` passes 84 tests.
+The 19 new ones are in `test/control.test.mjs` and use the fake engine plus
+in-process units. They cover:
+
+- **Approval:**
+  - forwarding with app, risk and always-allow
+  - asking once per session
+  - the `0600` always-allow file honoured by a new session
+  - decline with guidance
+  - instant-cancel fallback
+  - `deny-unknown`
+  - Chrome never prompted
+  - the timeout clock pausing during a prompt
+  - the native-dialog policy, via an injected dialog
+- **Turns:**
+  - turn metadata on every cell
+  - `stop_app`, with an app and without
+  - turn end on idle and on cancellation (the cancelled click never runs)
+- **Takeover:**
+  - keyboard actions (`press_key`, `type_text`, `paste`) retry once
+  - index actions return the error plus fresh state and are not retried
+- **Errors:** the diagnostics table, and the bundle-id retry for display names
+- **Focus guard:**
+  - restore from an activation event mid-action
+  - late self-activation
+  - no restore when the front is unchanged, another app took it, the target
+    was already front, or restore is disabled
+  - name, bundle and path matching
+
+## Research, measured on the live engine
+
+| Question | Finding |
+| --- | --- |
+| Approval request shape | Sent before every wrapped call. `_meta` has `riskLevel`, `subtitle`, `persist` (`session`/`always`), `tool_params.app` (bundle id) and `tool_params_display`. The engine stores nothing, so persistence is up to the host. |
+| Cell timeout during approval | Suspended. A 2 s cell finished after a 5 s approval delay (5116 ms). The shim's own clock now pauses too. |
+| Error codes | Only the message survives the sky-service RPC (e.g. `Computer Use server error -10005: cgWindowNotFound`). Codes come from `errors.js` (`-10000…-10020`); the shim matches on text. |
+| Claude Code elicitation | Claude Code 2.1.304 headless (`claude -p`) advertises `elicitation: {form, url}` but answers `{"action":"cancel"}` in **4 ms**. |
+| Stop / turn end in the public `cua` API | Neither exists. The service has `ComputerUseIPCAppStopRequest {app: <appPath>}` and `ComputerUseIPCCodexTurnEndedRequest {threadID, turnID}`, which a trusted `node_repl` service can send. cua-repl's own `turn_ended` tool returned `{}` and had no effect: no trusted library handles it in this build. |
+| AppStop semantics | Releases the session (status menu `activeApplications` went from `["com.apple.Chess"]` to `[]`). Afterwards the app is refused with "explicitly stopped by the user for this turn", service-wide (a second engine was refused too). A bundle id is a no-op (`active:false`); it needs the app path. |
+| What clears a stop | `TurnEnded` for the session, but only when the call metadata carries `session_id`. Variants with only `thread_id`, with or without the stop's own metadata, stayed blocked (4/4). All 3 variants with `session_id` cleared it. A late call carrying the ended turn id is refused ("current turn ended"). |
+| Re-activating an app from a background helper | `NSRunningApplication.activate(.activateIgnoringOtherApps)`: under 1 ms per call, frontmost in about 22 ms. For comparison: LaunchServices `openApplication` about 33 ms, an Apple Event about 37–76 ms, osascript `activate` about 140 ms (earlier measurement). |
+
+## Live, this worktree's shim
+
+| Capability | Evidence |
+| --- | --- |
+| Approval via elicitation | The real engine's request reached the client as `Allow Claude to use "Chess" (com.apple.Chess) with computer use?\nRisk: low` with an `always` boolean. One prompt covered `get_app_state` and the following action. "Always" wrote `approvals.json` mode `-rw-------`. |
+| Diagnostics | `click` index 9999 → `-10005 … invalid element ID` plus "Call get_app_state for fresh indices". `NoSuchAppXYZ` → `Invalid app` plus "Use list_apps and pass its exact bundle id …". |
+| Bundle-id retry | The engine rejects `"Chess "` (`Invalid app: Chess `). The shim's `get_app_state("Chess ")` returned Chess's tree and screenshot through `com.apple.Chess`. |
+| `stop_app` | `Stopped Chess (com.apple.Chess).` in 12–22 ms. The next `get_app_state` worked (292 ms), because the turn ended right after the stop. `stop_app({})` stopped every app used. |
+| User stop | A second engine stopped Chess the way the menu bar does. The shim's next `press_key` returned the service text plus "The user stopped Computer Use for this app. Stop working on it now and hand back…". |
+| Turn lifecycle | Log: `turn 1 ends: stop_app` → `engine#1 turn 1 ended`; `turn 3 ends: idle` after 1.5 s of quiet (`OPENAI_CUA_TURN_IDLE_MS=1500`). |
+| Focus restore (Helium ⌘T, sampled every 100 ms) | `OPENAI_CUA_RESTORE_FOCUS=0`: Helium frontmost for **1644 ms** (16 of 93 samples). Default (on): **1 sample (~100 ms)**. The log shows `net.imput.helium took the front; re-activated com.t3tools.t3code (ok, 74ms)`, mid-action, before `press_key` returned. With only a check after the action (first version), the steal lasted 620 ms. |
+
+**After the rebase** the live probes were re-run against the rebased shim:
+
+- Approval prompt plus `always` file (`-rw-------`)
+- The `-10005` and `Invalid app` hints
+- The `"Chess "` alias retry, and `stop_app` on that alias (the bundle id it
+  resolved to is remembered)
+- `stop_app` followed by reuse in the next turn
+- The Helium ⌘T restore: 1 of 93 samples, restored after 83 ms, mid-action;
+  the tab was opened and closed
+
+## Proven infeasible or not exercised live
+
+- **Takeover ("The user changed '…'").** The service raises this only for real
+  user input. Edits from a second engine, typed into the same scratch document
+  between the shim's calls, did not trigger it. Making real user input would
+  mean moving the user's cursor or typing into the frontmost app. So this path
+  is covered by fake-engine tests built on the service's exact message strings
+  (`SkyComputerUseService` strings: "The user changed '…'. Re-query the latest
+  state with `get_app_state` before sending more actions.", "The user is still
+  interacting with '…'").
+- **A real menu-bar "Stop".** This needs a click on the menu bar. It was
+  simulated with the same `AppStop` request from another connection. A stop
+  made by another connection lasts until that connection's engine exits, so
+  this shim's turn end can't clear it.
+- **The native dialog policy.** It was not shown on screen, since that needs
+  the user to click. The AppleScript compiles (`osacompile`), and its logic is
+  unit-tested through an injected dialog.
+- **The interactive Claude Code elicitation UI.** Not exercised. Headless
+  behaviour was measured, as above.

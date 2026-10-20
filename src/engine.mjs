@@ -5,18 +5,37 @@
 // touch its replacement.
 import { spawn } from "node:child_process";
 import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { findRuntime, makeLineReader, writeLine } from "./lib.mjs";
 import { BLOCKED_APP } from "./tools.mjs";
 
 const PROTOCOL = "2025-06-18";
+
+// Our trusted node_repl service (stop app, end turn); see bridge-service.mjs.
+const SERVICE = fileURLToPath(new URL("./bridge-service.mjs", import.meta.url));
+export function serviceEnv(env) {
+  let services = {};
+  try { services = JSON.parse(env.NODE_REPL_TRUSTED_SERVICES || "{}"); } catch {}
+  return {
+    NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ ...services, cuabridge: SERVICE }),
+    NODE_REPL_TRUSTED_CODE_PATHS: [env.NODE_REPL_TRUSTED_CODE_PATHS, path.dirname(SERVICE)].filter(Boolean).join(":"),
+  };
+}
+
+// Without an approver: accept, except Chrome (by the bundle id the service resolved).
+const defaultApprove = (params) => BLOCKED_APP.test(`${params?.message} ${JSON.stringify(params?._meta?.tool_params ?? {})}`)
+  ? { action: "decline" } : { action: "accept", content: {} };
 
 export class EngineError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }
 
 export class Engine {
-  constructor({ log = () => {}, idleMs = 300000, startTimeoutMs = 45000, callTimeoutMs = 60000, runtime = findRuntime, audio = true } = {}) {
-    Object.assign(this, { log, idleMs, startTimeoutMs, callTimeoutMs, runtime, audio });
+  // approve(params, signal) answers the engine's approval elicitations;
+  // turnMeta() is attached to every js cell as x-codex-turn-metadata.
+  constructor({ log = () => {}, idleMs = 300000, startTimeoutMs = 45000, callTimeoutMs = 60000, runtime = findRuntime, audio = true, approve = defaultApprove, turnMeta = () => null } = {}) {
+    Object.assign(this, { log, idleMs, startTimeoutMs, callTimeoutMs, runtime, audio, approve, turnMeta });
     this.keepUntil = 0;         // no idle release before this time (an audio recording is running)
     this.cur = null;            // live instance
     this.queue = Promise.resolve(); // cells run one at a time per engine
@@ -29,9 +48,10 @@ export class Engine {
   // Run a JavaScript cell. Resolves { content, isError }; rejects EngineError.
   // A cancelled cell is skipped if still queued; if running, its engine is
   // stopped so the action cannot complete later. allowAudio lets this cell's
-  // audio-recording approval through; every other cell's is declined.
-  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false } = {}) {
-    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio);
+  // audio-recording approval through; every other cell's is declined. meta
+  // overrides the turn metadata (used to send a turn's own end).
+  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false, meta } = {}) {
+    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio, meta);
   }
 
   // Discard the REPL's JavaScript bindings (cua-repl's js_reset). Resolves
@@ -41,12 +61,12 @@ export class Engine {
     return this.#enqueue("js_reset", {}, this.callTimeoutMs, signal, false).then(() => true);
   }
 
-  #enqueue(tool, args, timeoutMs, signal, allowAudio) {
+  #enqueue(tool, args, timeoutMs, signal, allowAudio, meta) {
     this.busy++;
     clearTimeout(this.idleTimer);
     const job = this.queue.then(() => {
       if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
-      return this.#exec(tool, args, timeoutMs, signal, allowAudio);
+      return this.#exec(tool, args, timeoutMs, signal, allowAudio, meta);
     });
     this.queue = job.catch(() => {});
     return job.finally(() => { this.busy--; this.#armIdle(); });
@@ -69,13 +89,14 @@ export class Engine {
     this.#armIdle();
   }
 
-  async #exec(tool, args, timeoutMs, signal, allowAudio) {
+  async #exec(tool, args, timeoutMs, signal, allowAudio, meta) {
     const inst = await this.#ensure();
     if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
     const onAbort = () => this.#retire(inst, "cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
     inst.allowAudio = allowAudio;
-    const r = await this.#request(inst, "tools/call", { name: tool, arguments: args }, timeoutMs + Math.min(10000, timeoutMs), true)
+    const turn = tool === "js" ? meta ?? this.turnMeta() : null;
+    const r = await this.#request(inst, "tools/call", { name: tool, arguments: args, ...(turn ? { _meta: { "x-codex-turn-metadata": turn } } : {}) }, timeoutMs + Math.min(10000, timeoutMs), true)
       .finally(() => { inst.allowAudio = false; signal?.removeEventListener("abort", onAbort); });
     if (r.error) throw new EngineError(`engine error: ${r.error.message || JSON.stringify(r.error)}`, "ENGINE_RPC");
     return { content: r.result?.content || [], isError: !!r.result?.isError };
@@ -95,14 +116,14 @@ export class Engine {
 
   #spawn() {
     const rt = this.runtime();
-    const inst = { id: ++this.starts, dead: false, pending: new Map(), nextId: 1, proc: null, approved: new Set() };
+    const inst = { id: ++this.starts, dead: false, pending: new Map(), nextId: 1, proc: null, asking: 0, askedAt: 0, abort: new AbortController() };
     this.log(`engine#${inst.id} start ${rt.command} (${rt.source})`);
     const proc = spawn(rt.command, rt.args, {
       cwd: os.homedir(),
       // Desktop apps only: no browser surface, no Chrome backend. The audio
       // flags only register cua.computer.start/stop_audio_recording and
       // nodeRepl.emitAudio; starting a recording still needs approval below.
-      env: { ...process.env, ...rt.env, CUA_REPL_ENABLED_SURFACES: "computer", BROWSER_USE_AVAILABLE_BACKENDS: "",
+      env: { ...process.env, ...rt.env, ...serviceEnv(rt.env), CUA_REPL_ENABLED_SURFACES: "computer", BROWSER_USE_AVAILABLE_BACKENDS: "",
         SKY_ENABLE_AUDIO: this.audio ? "1" : "0", NODE_REPL_ENABLE_AUDIO: this.audio ? "1" : "0" },
       stdio: ["pipe", "pipe", "pipe"],
       detached: true, // own process group, so node_repl descendants are killed with it
@@ -112,6 +133,7 @@ export class Engine {
     const die = (why) => {
       if (inst.dead) return;
       inst.dead = true;
+      inst.abort.abort();
       this.log(`engine#${inst.id} exited: ${why}`);
       for (const p of inst.pending.values()) p.reject(new EngineError(`OpenAI computer-use engine exited (${why})`, "ENGINE_EXIT"));
       inst.pending.clear();
@@ -157,11 +179,17 @@ export class Engine {
     return new Promise((resolve, reject) => {
       if (inst.dead) return reject(new EngineError("OpenAI computer-use engine exited", "ENGINE_EXIT"));
       const id = inst.nextId++;
-      const timer = setTimeout(() => {
+      // The clock stops while the user is answering an approval prompt (the
+      // engine suspends its own cell timeout then, too).
+      const fire = () => {
+        const since = Date.now() - inst.askedAt;
+        if (inst.asking > 0) return (timer = setTimeout(fire, timeoutMs));
+        if (since < timeoutMs) return (timer = setTimeout(fire, timeoutMs - since));
         inst.pending.delete(id);
         reject(new EngineError(`OpenAI computer-use ${method} timed out after ${timeoutMs}ms`, "ENGINE_TIMEOUT"));
         if (killOnTimeout || method === "initialize") this.#retire(inst, "timeout");
-      }, timeoutMs);
+      };
+      let timer = setTimeout(fire, timeoutMs);
       inst.pending.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
@@ -176,19 +204,27 @@ export class Engine {
   #onMessage(inst, m) {
     if (m.method) {
       if (m.id == null) return; // notifications
-      // Server→client requests. App-access approval is granted automatically;
-      // OpenAI's service still enforces its own denied/forbidden app policy.
+      // Server→client requests. Approval requests go to the approver (which
+      // may ask the user); OpenAI's service still enforces its own
+      // denied/forbidden app policy.
       let reply;
       if (m.method === "elicitation/create") {
         const what = m.params?.message || "elicitation";
-        const target = `${what} ${JSON.stringify(m.params?._meta?.tool_params ?? {})}`;
         const audio = m.params?._meta?.tool_name === "start_audio_recording" || /record computer audio/i.test(what);
-        if (BLOCKED_APP.test(target) || (audio && !inst.allowAudio)) { // canonical bundle id from the service
+        if (audio && !inst.allowAudio) { // only start_audio_recording's own cell may record
           this.log(`engine#${inst.id} declined: ${what}`);
           reply = { result: { action: "decline" } };
         } else {
-          if (!inst.approved.has(what)) { inst.approved.add(what); this.log(`engine#${inst.id} approved: ${what}`); }
-          reply = { result: { action: "accept", content: {} } };
+          inst.asking++;
+          Promise.resolve()
+            .then(() => this.approve(m.params ?? {}, inst.abort.signal))
+            .catch((e) => { this.log(`engine#${inst.id} approval failed: ${e.message}`); return { action: "decline" }; })
+            .then((result) => {
+              inst.asking--;
+              inst.askedAt = Date.now();
+              writeLine(inst.proc.stdin, { jsonrpc: "2.0", id: m.id, result });
+            });
+          return;
         }
       } else if (m.method === "ping") reply = { result: {} };
       else if (m.method === "roots/list") reply = { result: { roots: [] } };
@@ -211,6 +247,22 @@ export class Engine {
     // Bounded: give the group 1.5s, then SIGKILL whatever is left of it.
     inst.gone = Promise.race([inst.exited, new Promise((r) => setTimeout(r, 1500))]).then(() => group("SIGKILL"));
     return inst.gone;
+  }
+
+  // Tells the live engine that a turn ended (no-op when none runs), as that
+  // turn: SkyComputerUseService then clears per-turn stops and refuses late
+  // calls carrying it; trusted libraries also get cua-repl's turn_ended.
+  async endTurn({ thread, turn }) {
+    const inst = this.cur;
+    if (!inst || inst.dead || inst.retired) return false;
+    const code = `await nodeRepl.rpc("cuabridge", ${JSON.stringify({ type: "turnEnded", threadID: thread, turnID: turn })});`;
+    const results = await Promise.allSettled([
+      this.run(code, 10000, undefined, { meta: { session_id: thread, thread_id: thread, turn_id: turn } }).then((r) => ({ result: r })),
+      inst.ready.then(() => this.#request(inst, "tools/call", { name: "turn_ended", arguments: { hook_event_name: "Stop", session_id: thread, turn_id: turn } }, 10000)),
+    ]);
+    const bad = results.map((r) => r.status === "rejected" ? r.reason.message : r.value.error?.message || (r.value.result?.isError && r.value.result.content?.[0]?.text)).filter(Boolean);
+    this.log(`engine#${inst.id} turn ${turn} ended${bad.length ? ` (${bad.join("; ").slice(0, 300)})` : ""}`);
+    return !bad.length;
   }
 
   // Stops the current engine; resolves once its whole process group is gone.
