@@ -210,3 +210,66 @@ belong to thread `observe`.
 locked-screen probe, a failed probe filter sent `super+shift+a` and
 `super+comma` to Finder. The two Finder windows they opened were closed again;
 the only leftover is a harmless select-all of desktop icons.
+# Parity: OpenAI guidance delivered to Claude (2026-10-20)
+
+Branch `parity/guidance`. ChatGPT.app 26.1013.40934 installed; nothing from it
+is vendored. All text below was read live from the installed app.
+
+## Automated (`bun run check`: 30 pass, 0 fail after rebasing on #2)
+
+New tests run against a fake installed app and plugin cache built in a temp
+dir (`fakeInstall`), so they don't depend on this Mac:
+
+- instructions stay within 4096 characters, include our rules (osascript ban,
+  Helium) and the priority policy sections, and list what was omitted;
+- resources: cua docs, sky docs, Codex skill and plugin.json are listed; Linux
+  and Windows files are dropped; the newest cached plugin version wins;
+  unknown URIs return `-32002`; none of this starts the engine;
+- prompts `computer-use` (with a task argument) and `confirmation-policy`;
+- missing docs fall back to our own short policy;
+- first-use docs come once per session ahead of the result, with the tool
+  mapping. Later calls carry no docs, even though the REPL prints
+  `Warning: A was declared with const` noise before the marker. A mutation
+  check confirmed it: with the filter removed, this test fails;
+- docs printed by a REPL that resets mid-session are captured from before the
+  cell's start marker;
+- the installer symlinks the skill, backs up an existing one, and is
+  idempotent ("already linked").
+
+## Live: worktree shim over stdio (`/tmp/guidance-probe/probe.mjs`)
+
+- `initialize`: instructions are 3974 characters. They include Types of
+  Instruction, Hand-Off, Always Confirm and Pre-Approval verbatim. Omitted for
+  length, with a pointer to the resource: Scope, Sensitive Data &
+  "Transmission", No Confirmation Needed, Confirmation Hygiene. The full policy
+  still reaches the model through the first-use docs.
+- `resources/list`: 27 resources. These are 5 cua docs, the macOS sky skill,
+  `sky-window-api.md`, 13 cua-repl instruction texts, the Codex computer-use
+  `SKILL.md`, 3 plugin manifests, `NODE_REPL_INSTRUCTIONS_*`, the guide and
+  first-use.
+- First `list_apps` (1.5 s, cold engine; after rebase on #2): item 0 is a 23,982-character
+  first-use block (OpenAI's `## Computer Use` docs + confirmation policy, after
+  our mapping note). The second call has no docs block.
+  `openai-cua://engine/first-use` then returns the engine’s 22,410-character
+  text.
+- Bug found live and fixed: the persistent REPL's redeclaration warnings were
+  being taken for first-use docs, so docs were re-sent and the resource was
+  overwritten.
+
+## Live: fresh `claude -p` session (Haiku, `--strict-mcp-config` → worktree shim)
+
+The model answered:
+
+1. Quoting instructions: "Never open or operate Google Chrome; the only browser
+   allowed is Helium."
+2. "27 resources from the openai-computer-use server."
+3. Read the policy resource: "# Computer Use Confirmations Policy".
+4. Called `list_apps`: the first line was "[First-use documentation from
+   OpenAI's installed computer-use engine, shown once per session; …]", and it
+   "contained documentation about the cua API".
+
+A second fresh session, with the skill symlinked into a scratch project's
+`.claude/skills`, found and invoked `openai-computer-use` and quoted its
+"Helium is the only browser" rule. The installer was not run against the real
+profile, because it would re-point the registered server at this worktree.
+After merge, `node install.mjs` from the main checkout links the skill.

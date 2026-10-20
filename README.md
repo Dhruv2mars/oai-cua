@@ -61,6 +61,35 @@ Tools: `list_apps`, `get_app_state`, `click`, `type_text`, `paste`,
 `press_key`, `scroll`, `drag`, `set_value`, `select_text`,
 `perform_secondary_action`, `start_audio_recording`, `stop_audio_recording`.
 
+### OpenAI's guidance, delivered at runtime
+
+Claude gets the same model-facing guidance OpenAI gives its own model. The text
+is read from the installed ChatGPT.app and `~/.codex` at startup (plugin paths
+follow the newest installed version) and is never copied into this repo
+(`src/guidance.mjs`):
+
+- **Server instructions:** our short workflow rules plus the most important
+  sections of OpenAI's confirmation policy (`tinysky-alt-confirmations.md`),
+  within Claude Code's 4096-character cap. If the file is missing, a short
+  policy of our own is used instead.
+- **Resources** (`openai-cua://…`): the cua docs, macOS sky docs and skills,
+  the cua-repl tool texts, the Codex `computer-use` plugin skill, plugin
+  manifests and `NODE_REPL_INSTRUCTIONS_*` strings. There is also
+  `openai-cua://bridge/guide`, which maps the cua API onto these tools, and
+  `openai-cua://engine/first-use`.
+- **Prompts:** `computer-use` (guide + first-use docs + Codex skill, with an
+  optional task) and `confirmation-policy` (verbatim).
+- **First-use documentation:** a fresh engine prints its core docs and policy
+  before any output. The shim captures that text, including after an engine
+  restart, and puts it once per session at the front of the next tool result,
+  with a note mapping OpenAI's tool names (`js`, `node_repl`) onto these tools.
+
+The Claude Code skill `skills/openai-computer-use/SKILL.md` (our own text)
+teaches the observe/act/verify loop, app targeting, newline caveats, the
+confirmation taxonomy and this setup's defaults: Helium only, never Chrome,
+delegate computer use to Haiku subagents, and no AppleScript/osascript/JXA/
+System Events/CGEvent for UI work.
+
 ### Engine lifecycle
 
 | Event | What happens |
@@ -92,7 +121,7 @@ bun run check           # syntax + regression tests (fake engine, no GUI)
 bun run doctor          # live: runtime discovery + engine + list_apps timing
 ```
 
-The installer changes nothing unless every preflight passes. It then does four
+The installer changes nothing unless every preflight passes. It then does five
 things:
 
 1. Registers the shim as user-scoped `openai-computer-use` in
@@ -103,7 +132,10 @@ things:
    claim GUI tasks. Pass `--keep-native` to skip this.
 3. Removes the v0.1 `openai-cua-worker` from the Codex config with
    `codex mcp remove`, and stops any legacy worker processes.
-4. Writes `0600` backups of every file it changes to
+4. Symlinks the skill to `$CLAUDE_CONFIG_DIR/skills/openai-computer-use`, so it
+   follows the repo like the registered shim does. Anything already there is
+   backed up first. Pass `--skip-skill` to skip this.
+5. Writes `0600` backups of every file it changes to
    `~/.openai-cua-bridge/backups/`. That directory is mode `0700`.
 
 Already-running Claude sessions keep their old server process until you run
@@ -115,7 +147,8 @@ Overrides:
 - `OPENAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
 - `OPENAI_CUA_AUDIO`: `0` turns computer-audio recording off.
 - `OPENAI_CUA_MCP_JSON`: path to a cua-repl manifest.
-- `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback.
+- `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
+- `OPENAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
 - `CODEX_HOME`, `OPENAI_CUA_STATE_DIR`.
 
 ## Limits

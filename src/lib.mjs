@@ -81,14 +81,19 @@ export function findRuntime() {
 }
 
 function pluginManifests() {
-  const dir = path.join(CODEX_HOME, "plugins/cache/openai-bundled/unified-computer-use");
+  return versionDirs(path.join(CODEX_HOME, "plugins/cache/openai-bundled/unified-computer-use")).map((d) => path.join(d, ".mcp.json"));
+}
+
+// Version subdirectories of a Codex plugin cache dir, newest first
+// (numeric compare, so 26.1013.x sorts above 26.913.x).
+export function versionDirs(dir) {
   let versions = [];
-  try { versions = fs.readdirSync(dir); } catch { return []; }
+  try { versions = fs.readdirSync(dir).filter((v) => !v.startsWith(".")); } catch { return []; }
   const num = (v) => v.split(".").map((n) => Number(n) || 0);
   versions.sort((a, b) => {
     const x = num(a), y = num(b);
     for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0);
     return 0;
   });
-  return versions.map((v) => path.join(dir, v, ".mcp.json"));
+  return versions.map((v) => path.join(dir, v));
 }

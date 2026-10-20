@@ -23,6 +23,7 @@ export class Engine {
     this.busy = 0;              // queued + running cells
     this.idleTimer = null;
     this.starts = 0;
+    this.firstUse = [];         // first-use docs printed by fresh engines, until taken
   }
 
   // Run a JavaScript cell. Resolves { content, isError }; rejects EngineError.
@@ -134,7 +135,10 @@ export class Engine {
       const text = r.error?.message || String(r.result.content?.[0]?.text ?? "").slice(0, 500); // the REPL puts the error first
       throw new EngineError(`OpenAI computer-use engine is not authorized/ready: ${text}`, "ENGINE_START");
     }
-    this.log(`engine#${inst.id} ready`);
+    // A fresh REPL prints OpenAI's first-use documentation before any output.
+    const docs = (r.result.content || []).filter((c) => c.type === "text" && c.text?.trim()).map((c) => c.text);
+    if (docs.length) this.firstUse.push(...docs);
+    this.log(`engine#${inst.id} ready${docs.length ? ` (first-use docs: ${docs.join("").length} chars)` : ""}`);
     return inst;
   }
 
@@ -204,6 +208,9 @@ export class Engine {
     this.keepUntil = 0;
     return this.cur ? this.#retire(this.cur, why) : Promise.resolve();
   }
+
+  // First-use documentation captured at engine start since the last call.
+  takeFirstUse() { return this.firstUse.splice(0); }
 
   get running() { return !!this.cur && !this.cur.dead; }
   get pid() { return this.cur?.proc?.pid; }

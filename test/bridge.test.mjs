@@ -21,7 +21,7 @@ function sandbox(env = {}) {
   fs.writeFileSync(log, "");
   return {
     dir, log,
-    env: { ...process.env, HOME: dir, OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, ...env },
+    env: { ...process.env, HOME: dir, CODEX_HOME: path.join(dir, ".codex"), OPENAI_CUA_APP: path.join(dir, "ChatGPT.app"), OPENAI_CUA_STATE_DIR: path.join(dir, "state"), OPENAI_CUA_MCP_JSON: manifest, FAKE_LOG: log, FAKE_DOCS: "", ...env },
     events: () => fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)),
   };
 }
@@ -44,6 +44,20 @@ function startShim(sb) {
     init: () => rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } }),
     call: async (name, args = {}) => (await rpc("tools/call", { name, arguments: args })).result,
   };
+}
+// A fake installed ChatGPT.app + Codex plugin cache with OpenAI-shaped docs.
+function fakeInstall(sb) {
+  const put = (rel, body) => { const f = path.join(sb.dir, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); };
+  const nm = "ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai";
+  const filler = (n) => Array.from({ length: n }, (_, i) => `## Filler ${i}\n${"policy prose ".repeat(40)}`).join("\n\n");
+  put(`${nm}/cua/docs/tinysky-alt-confirmations.md`, `# Policy\n\n## Scope\nSCOPE-RULE\n\n## Always Confirm\nALWAYS-CONFIRM-RULE\n\n## Hand-off\nHAND-OFF-RULE\n\n${filler(12)}`);
+  put(`${nm}/cua/docs/tinysky-alt-core-cua-repl.md`, "# Core\nCORE-DOC uses js and node_repl");
+  put(`${nm}/sky/docs/sky-window-api.md`, "SKY-WINDOW");
+  put(`${nm}/sky/docs/skills/linux/x.md`, "LINUX-ONLY");
+  put(`${nm}/sky/docs/skills/win.md`, 'target: "windows";\nWINDOWS-ONLY');
+  put(".codex/plugins/cache/openai-bundled/computer-use/1.9.0/skills/computer-use/SKILL.md", "OLD-SKILL");
+  put(".codex/plugins/cache/openai-bundled/computer-use/1.10.0/skills/computer-use/SKILL.md", "CODEX-SKILL");
+  put(".codex/plugins/cache/openai-bundled/computer-use/1.10.0/.codex-plugin/plugin.json", '{"name":"computer-use"}');
 }
 const textOf = (r) => r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 const spawns = (sb) => sb.events().filter((e) => e.ev === "spawn");
@@ -250,6 +264,68 @@ describe("tools", () => {
   });
 });
 
+describe("guidance", () => {
+  test("OpenAI docs from the installed app become instructions, resources and prompts", async () => {
+    const sb = sandbox(); fakeInstall(sb);
+    const s = startShim(sb);
+    const init = (await s.init()).result;
+    expect(init.capabilities.resources).toBeDefined();
+    expect(init.capabilities.prompts).toBeDefined();
+    const ins = init.instructions;
+    expect(ins.length).toBeLessThanOrEqual(4096);
+    for (const t of ["get_app_state", "osascript", "Helium", "ALWAYS-CONFIRM-RULE", "HAND-OFF-RULE", "SCOPE-RULE", "Omitted for length", "openai-cua://engine/first-use"]) expect(ins).toContain(t);
+    const uris = (await s.rpc("resources/list", {})).result.resources.map((r) => r.uri);
+    expect(uris).toContain("openai-cua://cua/docs/tinysky-alt-confirmations.md");
+    expect(uris).toContain("openai-cua://sky/docs/sky-window-api.md");
+    expect(uris).toContain("openai-cua://plugins/computer-use/skills/computer-use/SKILL.md");
+    expect(uris).toContain("openai-cua://plugins/computer-use/plugin.json");
+    expect(uris.some((u) => /linux|win\.md/.test(u))).toBe(false); // macOS only
+    const read = async (uri) => (await s.rpc("resources/read", { uri })).result?.contents[0].text;
+    expect(await read("openai-cua://plugins/computer-use/skills/computer-use/SKILL.md")).toBe("CODEX-SKILL"); // newest version wins
+    expect(await read("openai-cua://bridge/guide")).toContain("get_app_state ← ");
+    expect(await read("openai-cua://engine/first-use")).toContain("CORE-DOC"); // before the engine ran: same files it reads
+    expect((await s.rpc("resources/read", { uri: "openai-cua://nope" })).error.code).toBe(-32002);
+    const prompts = (await s.rpc("prompts/list", {})).result.prompts.map((p) => p.name);
+    expect(prompts).toEqual(["computer-use", "confirmation-policy"]);
+    const cu = (await s.rpc("prompts/get", { name: "computer-use", arguments: { task: "TASK-X" } })).result.messages[0].content.text;
+    for (const t of ["CORE-DOC", "CODEX-SKILL", "TASK-X", "these openai-computer-use tools"]) expect(cu).toContain(t);
+    expect((await s.rpc("prompts/get", { name: "confirmation-policy" })).result.messages[0].content.text).toContain("ALWAYS-CONFIRM-RULE");
+    expect(spawns(sb).length).toBe(0); // none of this starts the engine
+  });
+
+  test("missing OpenAI docs degrade to our own short policy", async () => {
+    const sb = sandbox(), s = startShim(sb);
+    const ins = (await s.init()).result.instructions;
+    expect(ins).toContain("not found in the installed app");
+    expect(ins).toContain("Confirm with the user");
+    expect((await s.rpc("prompts/get", { name: "confirmation-policy" })).error.code).toBe(-32602);
+    expect((await s.rpc("resources/read", { uri: "openai-cua://engine/first-use" })).error.code).toBe(-32002);
+    expect((await s.rpc("resources/list", {})).result.resources.length).toBe(2);
+  });
+
+  test("first-use docs pass through once per session, with the tool mapping", async () => {
+    const sb = sandbox({ FAKE_DOCS: "## Computer Use\nFIRST-USE-BODY" }), s = startShim(sb);
+    await s.init();
+    const r1 = await s.call("get_app_state", { app: "TextEdit" });
+    expect(r1.content[0].text).toContain("FIRST-USE-BODY");
+    expect(r1.content[0].text).toContain("get_app_state ← ");
+    expect(r1.content.at(-1).type).toBe("image");
+    expect(textOf(r1)).toContain("tree of TextEdit é日");
+    const r2 = await s.call("get_app_state", { app: "TextEdit" });
+    expect(textOf(r2)).toBe("tree of TextEdit é日"); // REPL "declared with const" warnings are not docs
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toBe("tree of TextEdit é日");
+    expect((await s.rpc("resources/read", { uri: "openai-cua://engine/first-use" })).result.contents[0].text).toBe("## Computer Use\nFIRST-USE-BODY");
+  });
+
+  test("docs a REPL prints mid-session (reset) are captured from before the cell's start marker", async () => {
+    const sb = sandbox({ FAKE_DOCS: "", FAKE_REPL_RESET: path.join(os.tmpdir(), `reset-${process.pid}-${Date.now()}`), FAKE_RESET_DOCS: "RESET-DOCS" }), s = startShim(sb);
+    await s.init();
+    const r1 = await s.call("press_key", { app: "TextEdit", key: "a" });
+    expect(r1.content[0].text).toContain("RESET-DOCS");
+    expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).not.toContain("RESET-DOCS");
+  });
+});
+
 describe("lifecycle", () => {
   test("slow initialize is awaited", async () => {
     const sb = sandbox({ FAKE_INIT_DELAY_MS: "300" }), s = startShim(sb);
@@ -409,6 +485,7 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     fs.mkdirSync(path.join(dest, "src"), { recursive: true });
     fs.copyFileSync(path.join(ROOT, "install.mjs"), path.join(dest, "install.mjs"));
     for (const f of fs.readdirSync(path.join(ROOT, "src"))) fs.copyFileSync(path.join(ROOT, "src", f), path.join(dest, "src", f));
+    fs.cpSync(path.join(ROOT, "skills"), path.join(dest, "skills"), { recursive: true });
     return dest;
   }
 
@@ -419,6 +496,8 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     const cfg = path.join(sb.dir, "claude-cfg");
     fs.mkdirSync(cfg);
     fs.writeFileSync(path.join(cfg, "settings.json"), JSON.stringify({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }] }), { mode: 0o600 });
+    fs.mkdirSync(path.join(cfg, "skills/openai-computer-use"), { recursive: true });
+    fs.writeFileSync(path.join(cfg, "skills/openai-computer-use/SKILL.md"), "OLD USER SKILL");
     const r = spawnSync(NODE, [path.join(repo, "install.mjs")], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
     expect(r.status).toBe(0);
     expect(fs.existsSync(path.join(sb.dir, "INJECTED"))).toBe(false);
@@ -432,6 +511,12 @@ if(a[1]==="remove")fs.writeFileSync(st,"");`), { mode: 0o755 });
     expect(settings).toEqual({ switchModelsOnFlag: false, deniedMcpServers: [{ serverName: "x" }, { serverName: "computer-use" }] });
     expect(calls().some((c) => c.cmd === "codex" && c.a[1] === "remove" && c.a[2] === "openai-cua-worker")).toBe(true);
     expect(fs.readdirSync(path.join(sb.dir, "state/backups")).length).toBeGreaterThan(0);
+    const skill = path.join(cfg, "skills/openai-computer-use");
+    expect(fs.realpathSync(skill)).toBe(fs.realpathSync(path.join(repo, "skills/openai-computer-use")));
+    const saved = fs.readdirSync(path.join(sb.dir, "state/backups")).find((f) => f.startsWith("skills-openai-computer-use."));
+    expect(fs.readFileSync(path.join(sb.dir, "state/backups", saved, "SKILL.md"), "utf8")).toBe("OLD USER SKILL");
+    const again = spawnSync(NODE, [path.join(repo, "install.mjs"), "--skip-live"], { cwd: sb.dir, encoding: "utf8", env: { ...sb.env, PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: cfg } });
+    expect(again.stdout).toContain("already linked");
   });
 
   test("failed preflight (missing runtime, bad settings) changes nothing", () => {
