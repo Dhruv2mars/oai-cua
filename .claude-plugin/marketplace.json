@@ -1,0 +1,12 @@
+{
+  "name": "oai-cua",
+  "owner": { "name": "Dhruv2mars", "url": "https://github.com/Dhruv2mars" },
+  "description": "oai-cua: OpenAI's installed computer-use engine as Claude Code tools on macOS.",
+  "plugins": [
+    {
+      "name": "oai-cua",
+      "source": "./",
+      "description": "Computer-use tools for macOS apps (and Helium tabs), driven by OpenAI's installed computer-use engine."
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "oai-cua",
+  "displayName": "OpenAI Computer Use",
+  "version": "0.2.0",
+  "description": "Computer-use tools for macOS apps (and Helium tabs), driven by OpenAI's installed computer-use engine. No OpenAI model is called; the ChatGPT app only has to be installed.",
+  "author": { "name": "Dhruv2mars", "url": "https://github.com/Dhruv2mars" },
+  "repository": "https://github.com/Dhruv2mars/oai-cua",
+  "license": "MIT",
+  "keywords": ["computer-use", "macos", "mcp", "accessibility", "automation", "openai", "helium"],
+  "userConfig": {
+    "enable_js": {
+      "type": "boolean",
+      "title": "Enable run_cua_js and reset_repl",
+      "description": "Let Claude run JavaScript in the engine's REPL with the cua API. The REPL can import Node modules, so this is equivalent to letting Claude run local code. Off by default.",
+      "default": false
+    },
+    "computer_history": {
+      "type": "boolean",
+      "title": "Enable the Computer History tools",
+      "description": "Expose the computer_history_* tools (status, settings, pause, resume) for ChatGPT's Computer History recorder. Off by default; without it the recorder is never contacted.",
+      "default": false
+    },
+    "approval": {
+      "type": "string",
+      "title": "App-access approval fallback",
+      "description": "What happens when the engine asks to use an app and Claude Code can't ask you itself (headless sessions, clients without elicitation): auto accepts, prompt shows a macOS dialog, deny-unknown declines apps you haven't allowed before.",
+      "options": ["auto", "prompt", "deny-unknown"],
+      "default": "auto"
+    }
+  }
+}

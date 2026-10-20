@@ -1,5 +1,6 @@
 // Claude-facing tool schemas and their translation into cua-repl JavaScript.
 // Arguments are embedded as JSON literals, never spliced as code.
+import { envFlag } from "./lib.mjs";
 
 const APP = { type: "string", description: "App display name, full app path, or bundle identifier (e.g. \"TextEdit\", \"com.apple.TextEdit\"). If a display name fails, retry with the bundle id from list_apps" };
 const INDEX = { type: "integer", description: "Element index from the latest accessibility tree (get_app_state or an action's diff). Indices go stale after the UI changes" };
@@ -127,7 +128,7 @@ TOOLS.push(
 // The user never wants Google Chrome opened or driven, in any form.
 export const BLOCKED_APP = /chrome/i;
 
-export const jsEnabled = () => process.env.OAI_CUA_ENABLE_JS === "1";
+export const jsEnabled = () => envFlag("OAI_CUA_ENABLE_JS");
 const tool = (name) => TOOLS.find((t) => t.name === name && (!t.js || jsEnabled()));
 export const TOOL_NAMES = new Set(TOOLS.filter((t) => tool(t.name)).map((t) => t.name));
 export const isReadOnly = (name) => !!tool(name)?.readOnly;
@@ -137,7 +138,7 @@ export const publicTools = () => TOOLS.filter((t) => tool(t.name)).map(({ readOn
 export function validate(name, args) {
   const t = tool(name);
   if (!t) return TOOLS.some((x) => x.name === name)
-    ? `${name} is disabled. It runs arbitrary JavaScript, so it must be enabled explicitly: set OAI_CUA_ENABLE_JS=1 in the server's env (node install.mjs --enable-js) and reconnect.`
+    ? `${name} is disabled. It runs arbitrary JavaScript, so it must be enabled explicitly: turn on the plugin's enable_js option (/config, or OAI_CUA_ENABLE_JS=1 in the server's env) and reconnect.`
     : `unknown tool: ${name}`;
   if (args == null || typeof args !== "object" || Array.isArray(args)) return "arguments must be an object";
   const { properties, required } = t.inputSchema;

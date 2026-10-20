@@ -7,6 +7,8 @@ import { StringDecoder } from "node:string_decoder";
 
 export const STATE_DIR = process.env.OAI_CUA_STATE_DIR || path.join(os.homedir(), ".oai-cua");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+// Opt-in switches: "1", or "true" as a boolean plugin option substitutes.
+export const envFlag = (name) => /^(1|true)$/i.test(process.env[name]?.trim() ?? "");
 export const CHATGPT_APP = process.env.OAI_CUA_APP || "/Applications/ChatGPT.app";
 
 export function logger(name) {

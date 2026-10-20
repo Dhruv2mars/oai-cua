@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "computer-use": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/shim.mjs"],
+      "env": {
+        "OAI_CUA_STATE_DIR": "${CLAUDE_PLUGIN_DATA}",
+        "OAI_CUA_ENABLE_JS": "${user_config.enable_js}",
+        "OAI_CUA_COMPUTER_HISTORY": "${user_config.computer_history}",
+        "OAI_CUA_APPROVAL": "${user_config.approval}"
+      }
+    }
+  }
+}
