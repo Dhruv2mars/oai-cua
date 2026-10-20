@@ -113,6 +113,29 @@ describe("browser: tools against fake Helium", () => {
     expect(textOf(await call("browser_handle_dialog", { tab, accept: true }))).toContain("No dialog is open");
   });
 
+  test("input reaches a hidden tab: a frame is drawn first, again after a navigation", async () => {
+    const { fake, call, open } = setup();
+    const tab = await open("https://example.com/");
+    expect(textOf(await call("browser_press_key", { tab, ref: "e11", key: "a" }))).toContain("Pressed a");
+    expect([...fake.targets.values()].find((t) => t.url === "https://example.com/").keys).toEqual(["a"]);
+    await call("browser_navigate", { tab, url: "https://other.example/" });
+    expect(textOf(await call("browser_click", { tab, ref: "e10" }))).toContain("confirm dialog is open");
+  });
+
+  test("refs work only from the latest snapshot of the current document", async () => {
+    const { fake, call, open } = setup();
+    await call("browser_list_tabs", {}); // the user's tab is t1
+    const tab = await open("https://example.com/");
+    await call("browser_navigate", { tab, url: "https://empty.example/" });
+    const r = await call("browser_click", { tab, ref: "e10" }); // still resolvable in Chromium, at its old position
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain(`ref e10 is not in ${tab}'s latest snapshot`);
+    expect(fake.count("Input.dispatchMouseEvent")).toBe(0);
+    const user = textOf(await call("browser_claim_tab", { tab: "t1" }));
+    expect(user).toContain("Claimed t1");
+    expect(textOf(await call("browser_claim_tab", { tab: "t1" }))).toContain("t1 is already yours");
+  });
+
   test("new-tab links open as background tabs; if Helium still takes the front, the previous app gets it back", async () => {
     const { fake, call, open, fronts, activated } = setup();
     const tab = await open("https://example.com/");

@@ -10,6 +10,7 @@ export const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".co
 // Opt-in switches: "1", or "true" as a boolean plugin option substitutes.
 export const envFlag = (name) => /^(1|true)$/i.test(process.env[name]?.trim() ?? "");
 export const CHATGPT_APP = process.env.OAI_CUA_APP || "/Applications/ChatGPT.app";
+export const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 export function logger(name) {
   const file = path.join(STATE_DIR, name);

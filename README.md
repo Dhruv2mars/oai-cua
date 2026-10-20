@@ -284,6 +284,11 @@ Rules enforced in code:
   page still raises Helium (e.g. `window.open`), the app that was in front gets
   focus back, and the result says so.
 - **Dialogs never hang a call.** Input races against `Page.javascriptDialogOpening`.
+- **Input reaches hidden tabs.** Chromium drops mouse and key input to a
+  background tab until it has drawn its current page, so each click or key
+  first draws one frame (a 1×1 capture, ~50ms).
+- **Refs belong to one page.** A ref is accepted only from the tab's latest
+  snapshot of its current document; after a navigation, take a new snapshot.
 
 **Enabling it (once, by the user):** in Helium open
 `chrome://inspect/#remote-debugging` and turn on *Allow remote debugging for
