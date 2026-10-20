@@ -90,6 +90,49 @@ confirmation taxonomy and this setup's defaults: Helium only, never Chrome,
 delegate computer use to Haiku subagents, and no AppleScript/osascript/JXA/
 System Events/CGEvent for UI work.
 
+### Record & Replay (native client)
+
+`record_start`, `record_status`, `record_stop` and `recording_to_skill` use the
+Record & Replay MCP server built into OpenAI's `SkyComputerUseClient`
+(`event-stream mcp`), loaded from `~/.codex/computer-use/` at runtime.
+
+- `record_start` records **your** clicks, typing and window content for up to
+  30 minutes. OpenAI's service asks for consent first. The shim forwards that
+  prompt to Claude Code as an MCP elicitation, so you answer it. The shim never
+  answers it. A client without elicitation support can't start a recording.
+- `record_stop` returns the paths to `events.jsonl` and the session metadata.
+- `recording_to_skill` turns the recording into a draft
+  `$CLAUDE_CONFIG_DIR/skills/<name>/SKILL.md` (mode `0600`) with inputs, steps
+  and replay guidance. It drops secure-input events and redacts text that looks
+  like a secret. It won't overwrite an existing skill unless you pass
+  `overwrite: true`. Claude then refines the draft with you.
+
+The service only answers a client whose parent is OpenAI-signed and whose
+responsible process may send it Apple Events. The shim therefore launches
+`python3 src/spawn-disclaimed.py` → ChatGPT's signed `cua_node` →
+`SkyComputerUseClient`. The python step disclaims responsibility. It needs
+python3 from Homebrew, `/usr/local` or the Xcode Command Line Tools, or set
+`OPENAI_CUA_PYTHON`. The client is released when idle, but not while a
+recording is running.
+
+### Computer History (opt-in, off by default)
+
+Set `OPENAI_CUA_COMPUTER_HISTORY=1` to expose `computer_history_status`,
+`computer_history_get_settings`, `computer_history_update_settings`,
+`computer_history_pause` and `computer_history_resume`. Without it the tools
+are not listed, and the bridge never contacts the recorder.
+
+- The bridge can't turn Computer History on. Starting it, and clearing it, are
+  only possible in ChatGPT's settings.
+- Computer History is OpenAI's rolling local log of the apps, windows and URLs
+  you use. It writes event segments under
+  `~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight`.
+  ChatGPT summarizes them into memories with `codex exec`.
+- The service applies its own observe and do-not-observe rules before anything
+  is written. These tools only read or replace those rules, or pause and resume
+  the recorder. `resume` and `update_settings` change what gets recorded, so
+  Claude should only call them when you ask.
+
 ### Engine lifecycle
 
 | Event | What happens |
@@ -150,6 +193,10 @@ Overrides:
 - `OPENAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
 - `OPENAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
 - `CODEX_HOME`, `OPENAI_CUA_STATE_DIR`.
+- `OPENAI_CUA_COMPUTER_HISTORY=1`: expose the Computer History tools. Off by default.
+- `OPENAI_CUA_PYTHON`, `OPENAI_CUA_NATIVE_CLIENT`, `OPENAI_CUA_NATIVE_PARENT`:
+  the python3, `SkyComputerUseClient` and signed parent `node` used for the
+  native client.
 
 ## Limits
 

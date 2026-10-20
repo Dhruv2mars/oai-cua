@@ -273,3 +273,175 @@ A second fresh session, with the skill symlinked into a scratch project's
 "Helium is the only browser" rule. The installer was not run against the real
 profile, because it would re-point the registered server at this worktree.
 After merge, `node install.mjs` from the main checkout links the skill.
+
+---
+
+# Verification: SkyComputerUseService parity, thread "service" (2026-10-20)
+
+Scope: the native `SkyComputerUseClient` MCP servers, Record & Replay, Computer
+History (Skysight), and other service-layer features. The work used read-only
+probes, plus one `record_start` whose consent prompt was **declined**. No
+recording was started and no Computer History setting was changed.
+
+## Native client: where it is and how ChatGPT launches it
+
+- Binary: `~/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient`
+  (14.8 MB, arm64). Identifier `com.openai.sky.CUAService.cli`, team
+  `2DC432GLL2`, hardened runtime. Its entitlements are only the app group
+  `2DC432GLL2.com.openai.sky.CUAService` and keychain groups. It has **no**
+  `com.apple.security.automation.apple-events`.
+- ChatGPT's plugins launch it through `bin/computer-use-client-launcher`, a
+  shell `exec` of the binary above. For example,
+  `plugins/openai-bundled/plugins/record-and-replay/.mcp.json` runs
+  `computer-use-client-launcher event-stream mcp`.
+- `--experimental-dump-help` lists the subcommands: `mcp`, `event-stream mcp`,
+  `computer-history mcp`, `calendar mcp`, `messages mcp` and `turn-ended`.
+- `tools/list` (initialize and tools/list only) returned these tools:
+  - `mcp`: the same 10 tools as the bridge (`list_apps`, `get_app_state`,
+    `click`, `perform_secondary_action`, `set_value`, `select_text`, `scroll`,
+    `drag`, `press_key`, `type_text`). It has no modifier hold, paste or
+    batching.
+  - `event-stream`: `event_stream_start`, `event_stream_status`,
+    `event_stream_stop`.
+  - `computer-history`: `computer_history_pause`, `_resume`, `_status`,
+    `_get_settings` and `_update_settings`. The settings are `observation`:
+    `defaultApplicationBehavior` and `defaultURLBehavior` (each `observe` or
+    `do_not_observe`), plus `allowlist` and `blocklist` of `{scope: app|url, bundleID|urlDomain}`.
+  - `calendar`: `list_calendars`, `list_events`, `get_event`, `create_event`,
+    `update_event`, `delete_event`.
+  - `messages`: `find_chats`, `read_messages`, `search_messages`,
+    `send_message`, `count_message_activity`, `read_image`.
+
+## Reachability: three gates, and how the bridge passes them
+
+1. **TCC (Apple Events).** When the client is spawned directly, its first
+   call hangs at bootstrap. The unified log shows:
+   `tccd: Prompting policy for hardened runtime; service: kTCCServiceAppleEvents requires entitlement com.apple.security.automation.apple-events but it is missing for responsible={… com.t3tools.t3code …}`.
+   The responsible process (the host app) decides the outcome.
+2. **Sender authentication.** Spawning it through
+   `posix_spawn` + `responsibility_spawnattrs_setdisclaim` (the client becomes
+   self-responsible) gets past TCC. The service then answers
+   `Computer Use server error -10000: Sender process is not authenticated`.
+   Service strings show why: `CODEX_COMPUTER_USE_IPC_AUTHORIZATION_FAILURE_REASON_{MISSING_PARENT,UNTRUSTED_PARENT,RELAY_WITHOUT_TRUSTED_ANCESTOR}`,
+   `trustedProcessRequirement`, `senderAncestorIdentities`, team IDs
+   `2DC432GLL2`, and executables `node`, `node_repl` and `codex-acp`.
+3. **Trusted parent.** ChatGPT's own `cua_node/bin/node` is signed by team
+   `2DC432GLL2` and has the `automation.apple-events` entitlement. Using it as
+   the client's parent, with responsibility disclaimed, works. The chain
+   `python3 -I src/spawn-disclaimed.py → cua_node/bin/node -e <spawn> → SkyComputerUseClient`
+   returned `list_apps` in about 600 ms. That signed node is the same runtime
+   the bridge already uses for cua-repl. Nothing is vendored.
+
+Closed alternative: an engine cell can't reach `computeruse.sock` directly.
+Importing `@oai/sky/.../targets/mac/client.js` in a cua-repl cell and calling
+`request("ComputerUseIPCEventStreamStatusRequest")` returned
+`Sky Computer Use native pipe is unavailable`. `nodeRepl.nativePipe` is only
+given to trusted service code.
+
+## Native `mcp` vs cua-repl: benchmark (not adopted for core tools)
+
+The test ran 3 runs of each path, in fresh processes, with the same calls.
+The screen was locked, so `get_app_state` measured the IPC round trip of a
+`cgWindowNotFound` reply. That error is the same on both paths.
+
+| | cua-repl (shim) | native `mcp` |
+| --- | --- | --- |
+| initialize | 69–84 ms | 558–787 ms |
+| first `list_apps` (cold) | 1350–1522 ms | 577–619 ms |
+| cold total | ~1.42–1.61 s | ~1.18–1.41 s |
+| warm `list_apps` | 9–13 ms | 8–22 ms |
+| warm `get_app_state` | 6–8 ms | 8–42 ms |
+
+Verdict: cold start is about 0.2 s faster on the native path. Warm calls are
+equal. The native path has fewer features: no hold, paste or batching, and no
+auto-approval (each app needs a fresh elicitation). It also needs the
+python3 disclaim hop. So the core tools stay on cua-repl. The native client is
+used only for the features cua-repl lacks (below).
+
+## Record & Replay: shipped
+
+- New tools: `record_start`, `record_status` and `record_stop`, backed by
+  `event-stream mcp`. A fourth tool, `recording_to_skill`, writes a Claude
+  Code `SKILL.md`. Its template and wording are our own.
+- Consent: the service sends
+  `elicitation/create "Allow ChatGPT to record your actions on your Mac?"`.
+  The shim forwards it to the Claude client and returns that client's answer.
+  If the client does not advertise elicitation, the shim does not advertise it
+  to the service either, so the bridge never gives consent on the user's
+  behalf. Claude Code 2.1.303 supports elicitation (`elicitation:{form:…}` in
+  its binary).
+- The event schema was recovered from service strings. Event types are
+  `session.started|ended`, `window.changed`, `mouse.click`,
+  `mouse.context_menu`, `mouse.drag`, `keyboard.text_input`, `keyboard.submit`,
+  `keyboard.shortcut`, `terminal.value_changed`, `selection.changed` and
+  `debug.error`. Fields include `secureInput`, `bundleIdentifier`, `button`,
+  `clickCount`, `modifiers`, `target`, `origin`, `destination`,
+  `keyEquivalent`, `selectedText`, `endReason` and `eventCount`. No real
+  recording exists on this machine (the `Caches/ComputerUse` directory is
+  absent), so the converter looks fields up tolerantly. **Unverified:** the
+  exact nesting of fields in a real `events.jsonl`.
+- Live probe of this worktree's shim (`/tmp/service-probe/live/probe.mjs`;
+  the probe client declines every elicitation):
+  ```
+  ## record_status 1406ms isError=false   {"isRecording": false, "maxDurationSeconds": 1800}
+  CLIENT GOT elicitation/create {"message":"Allow ChatGPT to record your actions on your Mac?","requestedSchema":{"properties":{},"type":"object"}}
+  ## record_start 21ms isError=true        Record & Replay approval denied via MCP elicitation.
+  ## record_status 12ms isError=false      {"isRecording": false, ...}
+  ## recording_to_skill 5ms isError=false  Wrote /tmp/service-probe/live/skills/service-probe-demo/SKILL.md (4 steps, 1 inputs from 4 events)   [synthetic events file]
+  ```
+  `bun run doctor` now also reports
+  `✓ native client (Record & Replay status, read-only): { "isRecording" : false, "maxDurationSeconds" : 1800 }`.
+  This step is optional and doesn't fail the doctor.
+
+## Computer History (Skysight): reachable, exposed only on opt-in
+
+- Live reads, with the tools enabled by `OPENAI_CUA_COMPUTER_HISTORY=1`:
+  `computer_history_status` →
+  `{"state":"stopped","eventStreamRootPath":"~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/Library/Caches/ComputerUse/Skysight"}`.
+  `computer_history_get_settings` → empty allow and block lists, with both
+  defaults `observe`. Nothing was paused, resumed or updated live.
+- The MCP surface has no start or clear. The service has the IPC requests
+  `ComputerUseIPCSkysightStartRequest`, `…StopRequest` and
+  `…ClearHistoryRequest`, but only over the trusted pipe (see the closed route
+  above). So the bridge can't turn recording on.
+- **Data it touches:** the service writes
+  `Skysight/segments/<timestamp>/events.jsonl` (app, window, URL and UI events)
+  and `metadata.json`, plus `suppressed.jsonl` for events that the rules
+  blocked. Strings show 10-minute and 6-hour summaries made by `codex exec`
+  (`--sandbox read-only --ephemeral`) from "UNTRUSTED OBSERVED INPUT". They
+  also show URL policy filtering (`EventStreamURLPolicyRecordFilter`,
+  `isURLBlocked`) and default exclusions for system UI such as
+  `com.apple.controlcenter` and `com.apple.LocalAuthentication.UIAgent`.
+  The bridge only reads status and settings and passes through rule changes.
+  It never reads segment contents itself.
+
+## Other service-layer features: documented only
+
+- **Lock screen** (`CUALockScreenGuardian.app`, `SystemLockScreenMonitor`,
+  "The Mac is locked and automatic unlock …" errors). This is control-thread
+  territory. Observed here: while the Mac was locked, window calls failed with
+  `-10005 cgWindowNotFound` on both paths.
+- **Menu-bar status item** (`CodexStatusItemStateNotificationPublisher`,
+  `ComputerUseIPCCodexStatusItemMenuStateRequest`) and **stopApplication**
+  (`ComputerUseIPCAppStopRequest`). Both are reachable only over the trusted
+  pipe and belong to the "control" thread (stop and takeover). Not exposed here.
+- **Calendar and Messages MCP servers** are reachable by the same launch chain.
+  They are not exposed: they read and write personal data, and they are
+  outside this brief.
+
+## Automated
+
+`bun run check` → 27 pass. The new file `test/service.test.mjs` uses a fake
+`SkyComputerUseClient` launched through the real python3 disclaim chain. It
+covers:
+
+- the tool list, with Computer History hidden by default
+- consent forwarded to the client and accepted
+- consent declined, and a client with no elicitation support (nothing is
+  answered for the user)
+- the SKILL.md content: secure input dropped, secrets redacted, typing merged
+  into inputs, mode `0600`, no overwrite unless asked
+- argument validation
+- a missing client binary
+- the native client stopped on shim exit
+- Computer History opt-in, with nested schema validation
