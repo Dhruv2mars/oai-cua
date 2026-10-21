@@ -5,7 +5,11 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BROWSER_TOOLS, HeliumBrowser, browserGuide, checkOwners, discoverEndpoints, formatAXTree, parseKey, validateBrowser, verifyEndpoint } from "../src/browser.mjs";
+import { BROWSER_TOOLS, HeliumBrowser, browserGuide, validateBrowser } from "../src/browser.mjs";
+import { checkOwners, discoverEndpoints, verifyEndpoint } from "../src/cdp.mjs";
+import { parseKey } from "../src/keys.mjs";
+import { checkArgs, obj } from "../src/schema.mjs";
+import { formatAXTree } from "../src/snapshot.mjs";
 import { startFakeCdp } from "./fake-cdp.mjs";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -236,7 +240,7 @@ describe("browser: tools against fake Helium", () => {
     expect(textOf(await call("browser_cleanup", {}))).toContain(`closed ${tab}`);
     expect([...fake.targets.values()].map((x) => x.url)).toEqual(["https://mail.example/inbox"]);
     expect(textOf(await call("browser_read", { tab: "t1", offset: -1 }))).toContain("offset must be at least 0");
-    expect(textOf(await call("browser_read", { tab: "t1", max_chars: 1e9 }))).toContain("max_chars must be at most 100000");
+    expect(textOf(await call("browser_read", { tab: "t1", max_chars: 1e9 }))).toContain("max_chars must be from 1 to 100000");
   });
 
   test("guide: own rules always; OpenAI policy docs loaded at runtime when installed", async () => {
@@ -254,6 +258,19 @@ describe("browser: tools against fake Helium", () => {
 });
 
 describe("browser: helpers", () => {
+  test("shared argument checks: numeric strings only where allowed, null is absent", () => {
+    const s = obj({ n: { type: "integer", minimum: 1 }, s: { type: "string" }, a: { type: "array", minItems: 1, items: { type: "string" } } }, ["s"]);
+    expect(checkArgs(s, { s: "x", n: "2" })).toBe("n must be an integer");
+    expect(checkArgs(s, { s: "x", n: "2" }, { numericStrings: true })).toBe(null);
+    expect(checkArgs(s, { s: "x", n: true }, { numericStrings: true })).toBe("n must be an integer");
+    expect(checkArgs(s, { s: "x", n: "0" }, { numericStrings: true })).toBe("n must be at least 1");
+    expect(checkArgs(s, { s: "x", n: null, a: null })).toBe(null);
+    expect(checkArgs(s, { s: "" })).toBe("missing required argument: s");
+    expect(checkArgs(s, { s: "" }, { emptyOk: ["s"] })).toBe(null);
+    expect(checkArgs(s, { s: "x", a: [] })).toBe("a must have at least 1 entry");
+    expect(checkArgs(s, { s: "x", a: [1] })).toBe("a must be an array of strings");
+  });
+
   test("validation, key parsing, AX formatting", () => {
     expect(validateBrowser("browser_click", { tab: "t1" })).toContain("needs ref or both x and y");
     expect(validateBrowser("browser_click", { tab: "t1", ref: "button" })).toContain("ref must look like");
