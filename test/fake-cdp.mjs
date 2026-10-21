@@ -36,7 +36,9 @@ export function startFakeCdp({ userTabs = [{ title: "User Mail", url: "https://m
     const p = m.params ?? {};
     switch (m.method) {
       case "Browser.getVersion": return reply({ product: "Chrome/141.0.0.0", userAgent: "Helium" });
-      case "Target.setDiscoverTargets": return reply({});
+      case "Target.setDiscoverTargets": // like Chromium: existing targets are announced as created
+        for (const x of targets.values()) emit({ method: "Target.targetCreated", params: { targetInfo: info(x) } });
+        return reply({});
       case "Target.getTargets": hooks.getTargets?.(); return reply({ targetInfos: [...targets.values()].map(info) });
       case "Target.createTarget": { // like Chromium: a finished about:blank first, the URL commits later
         const nt = addTarget("about:blank", "about:blank");

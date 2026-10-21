@@ -5,22 +5,31 @@ import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
-export const STATE_DIR = process.env.OAI_CUA_STATE_DIR || path.join(os.homedir(), ".oai-cua");
+// An unsubstituted plugin variable ("${CLAUDE_PLUGIN_DATA}") or a relative path
+// would put state under whatever the working directory is.
+const stateDir = process.env.OAI_CUA_STATE_DIR;
+export const STATE_DIR = stateDir && path.isAbsolute(stateDir) && !stateDir.includes("${") ? stateDir : path.join(os.homedir(), ".oai-cua");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 // Opt-in switches: "1", or "true" as a boolean plugin option substitutes.
 export const envFlag = (name) => /^(1|true)$/i.test(process.env[name]?.trim() ?? "");
 export const CHATGPT_APP = process.env.OAI_CUA_APP || "/Applications/ChatGPT.app";
 export const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+// A private log file of at most ~1 MB, plus the previous one as <name>.1.
+const MAX_LOG = 1 << 20;
 export function logger(name) {
   const file = path.join(STATE_DIR, name);
+  const rotate = () => { try { if (fs.statSync(file, { throwIfNoEntry: false })?.size > MAX_LOG) fs.renameSync(file, `${file}.1`); } catch {} };
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
     fs.chmodSync(STATE_DIR, 0o700);
-    if (fs.statSync(file, { throwIfNoEntry: false })?.size > 1 << 20) fs.truncateSync(file, 0);
   } catch {}
+  rotate();
+  let written = 0;
   return (m) => {
-    try { fs.appendFileSync(file, `[${new Date().toISOString()}] ${process.pid} ${m}\n`, { mode: 0o600 }); } catch {}
+    const line = `[${new Date().toISOString()}] ${process.pid} ${m}\n`;
+    if ((written += line.length) > MAX_LOG / 16) { written = 0; rotate(); }
+    try { fs.appendFileSync(file, line, { mode: 0o600 }); } catch {}
   };
 }
 

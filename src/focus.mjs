@@ -19,6 +19,7 @@ import { STATE_DIR, makeLineReader } from "./lib.mjs";
 const SOURCE = fileURLToPath(new URL("./focus-helper.swift", import.meta.url));
 const SETTLE_MS = 300; // keep guarding briefly after the action for late self-activation
 const MAX_RESTORES = 3;  // per action; never fight an app (or the user) indefinitely
+const HELPER_TIMEOUT_MS = 2000; // a helper that stops answering is dropped for osascript
 
 const JXA = `ObjC.import("AppKit");
 function run(argv) {
@@ -47,7 +48,6 @@ export class FocusGuard {
     this.proc = null;
     this.waiters = [];
     this.guard = null; // the action being guarded
-    this.restores = 0;
     this.ready = null;
   }
 
@@ -59,6 +59,9 @@ export class FocusGuard {
       const src = fs.readFileSync(SOURCE);
       const bin = path.join(this.binDir, `focus-helper-${crypto.createHash("sha256").update(src).digest("hex").slice(0, 12)}`);
       if (!fs.existsSync(bin)) {
+        // /usr/bin/swiftc is a stub that offers to install the Command Line Tools
+        // (a dialog, every session) when no developer directory is set up.
+        await new Promise((res, rej) => execFile("/usr/bin/xcode-select", ["-p"], (e, out) => (e || !fs.existsSync(out.trim()) ? rej(new Error("no Xcode or Command Line Tools")) : res())));
         fs.mkdirSync(this.binDir, { recursive: true, mode: 0o700 });
         const tmp = `${bin}.${process.pid}.tmp`;
         await new Promise((res, rej) => execFile("/usr/bin/swiftc", ["-O", SOURCE, "-o", tmp], { timeout: 120000 }, (e) => (e ? rej(e) : res())));
@@ -82,7 +85,19 @@ export class FocusGuard {
 
   async #cmd(...argv) {
     if (this.ready) await this.ready;
-    if (this.proc) return new Promise((r) => { this.waiters.push(r); this.proc.stdin.write(argv.join(" ") + "\n"); });
+    const p = this.proc;
+    if (p) return new Promise((r) => {
+      const t = setTimeout(() => {
+        this.log("focus helper stopped answering; using osascript");
+        this.proc = null;
+        this.mode = "osascript";
+        try { p.kill(); } catch {}
+        for (const w of this.waiters.splice(0)) w(null);
+      }, HELPER_TIMEOUT_MS);
+      t.unref?.();
+      this.waiters.push((m) => { clearTimeout(t); r(m); });
+      p.stdin.write(argv.join(" ") + "\n");
+    });
     return new Promise((r) => execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", JXA, ...argv.map(String)], { timeout: 5000 }, (e, out) => {
       try { r(e ? null : JSON.parse(out)); } catch { r(null); }
     }));
@@ -124,7 +139,6 @@ export class FocusGuard {
     const t = Date.now();
     const r = await this.activate(before.pid).catch(() => null);
     guard.busy = false;
-    this.restores++;
     this.log(`focus: ${now.bundle || now.name} took the front; re-activated ${before.bundle || before.name} (${r?.ok ? "ok" : "failed"}, ${Date.now() - t}ms)`);
     return !!r?.ok;
   }

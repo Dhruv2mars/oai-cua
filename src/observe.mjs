@@ -4,7 +4,7 @@
 // another's "no change"; see VERIFICATION.md). So the bridge always captures
 // the full tree and diffs it against the last tree *this* session returned.
 
-const MAX_TEXT = 100_000; // ≈25k tokens at 4 chars/token, like Codex's tool output cap
+export const MAX_TEXT = 100_000; // ≈25k tokens at 4 chars/token, like Codex's tool output cap
 const MAX_IMAGES = 8;
 const MAX_LCS = 4_000_000; // cells; larger middles count as fully replaced
 
@@ -101,14 +101,16 @@ export class Observations {
   // Label and return a fresh full tree, as a diff when allowed and smaller.
   render(app, tree, { full = false } = {}) {
     const prev = this.seen.get(app);
-    this.seen.set(app, tree);
+    let out = null;
     if (!full && prev != null) {
       const d = diffTree(prev, tree);
-      if (d === "") return `No change in the accessibility tree since your last observation of ${app}; all element indices are still valid.`;
-      if (d != null)
-        return `Accessibility diff since your last observation of ${app} ("-" removed, "+" added or changed, indented lines are unchanged context). Elements not shown are unchanged and keep their indices:\n${d}`;
+      if (d === "") out = `No change in the accessibility tree since your last observation of ${app}; all element indices are still valid.`;
+      else if (d != null)
+        out = `Accessibility diff since your last observation of ${app} ("-" removed, "+" added or changed, indented lines are unchanged context). Elements not shown are unchanged and keep their indices:\n${d}`;
     }
-    return `Full accessibility tree of ${app}:\n${tree}`;
+    out ??= `Full accessibility tree of ${app}:\n${tree}`;
+    this.seen.set(app, tree);
+    return out;
   }
 }
 

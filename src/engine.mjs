@@ -282,5 +282,4 @@ export class Engine {
 
   get running() { return !!this.cur && !this.cur.dead; }
   get recording() { return Date.now() < this.keepUntil; } // an audio recording holds this engine
-  get pid() { return this.cur?.proc?.pid; }
 }

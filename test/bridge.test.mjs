@@ -2,7 +2,7 @@
 // Run with `bun run check` (bun test runner; the shim itself runs on Node).
 import { afterEach, describe, expect, test } from "bun:test";
 import { FirstUse } from "../src/guidance.mjs";
-import { diffTree, limitOutput } from "../src/observe.mjs";
+import { Observations, diffTree, limitOutput } from "../src/observe.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -351,6 +351,19 @@ describe("guidance", () => {
 });
 
 describe("observation", () => {
+  test("trees cut by the output cap are not the next diff's baseline", async () => {
+    const sb = sandbox(), file = path.join(sb.dir, "trees.json");
+    sb.env.FAKE_TREE_FILE = file;
+    const s = startShim(sb);
+    const big = (w) => `Window: "${w}"\n${Array.from({ length: 1700 }, (_, i) => `\t${i} button Action ${i} ${"x".repeat(25)}`).join("\n")}`;
+    fs.writeFileSync(file, JSON.stringify({ TextEdit: big("a"), Notes: big("b") })); // each fits, together they don't
+    await s.init();
+    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "a" } }] });
+    expect(textOf(r)).toContain("characters truncated");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toStartWith("Full accessibility tree");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("No change");
+  });
+
   const REST = Array.from({ length: 20 }, (_, i) => `\n\t\t${i + 2} button Action ${i}`).join("");
   const T1 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello${REST}`;
   const T2 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello world\nsecond line${REST}`;
@@ -650,6 +663,16 @@ describe("lifecycle", () => {
     expect(alive(hung)).toBe(false);
     await s.call("list_apps");
     expect(spawns(sb).length).toBe(2); // replaced
+  });
+
+  test("a numeric-string timeout_ms is used as a number", async () => {
+    const sb = sandbox({ FAKE_HANG: "1" }), s = startShim(sb);
+    await s.init();
+    const t = Date.now();
+    const r = await s.call("batch", { app: "TextEdit", timeout_ms: "1000", steps: [{ tool: "press_key", args: { key: "Tab" } }] });
+    expect(textOf(r)).toContain("timed out");
+    expect(Date.now() - t).toBeLessThan(5000); // "1000" + 1000 would be "10001000" ms
+    expect(sb.events().filter((e) => e.ev === "cell").at(-1).timeout_ms).toBe(1000);
   });
 
   test("cancelled calls: queued ones never run, running ones are stopped, no response sent", async () => {

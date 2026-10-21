@@ -204,6 +204,41 @@ describe("browser: tools against fake Helium", () => {
     expect(fake.targets.size).toBe(3);
   });
 
+  test("a claimed tab's new tabs are ours only right after our input; screenshots never scroll the user's tabs", async () => {
+    const { fake, b, call } = setup({ userTabs: [{ title: "A", url: "https://a.example/" }, { title: "B", url: "https://b.example/" }] });
+    await call("browser_list_tabs", {}); // t1, t2
+    await call("browser_snapshot", { tab: "t2" });
+    await call("browser_screenshot", { tab: "t2", ref: "e10" }); // user's tab: no scrolling
+    expect(fake.count("DOM.scrollIntoViewIfNeeded")).toBe(0);
+    await call("browser_claim_tab", { tab: "t1" });
+    // the user opens a tab from the claimed tab without any input from us
+    const t = { targetId: "U1", type: "page", url: "https://u.example/", title: "U", openerId: "T1", value: "", session: null, dialog: null, held: [], framed: false, keys: [] };
+    fake.targets.set(t.targetId, t);
+    fake.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "U1", type: "page", url: t.url, title: "U", openerId: "T1" } } });
+    expect(textOf(await call("browser_click", { tab: "t1", x: 40, y: 170 }))).toMatch(/A new tab t\d+ was opened by t1/); // ours: our click opened it
+    expect(textOf(await call("browser_cleanup", {}))).toMatch(/closed t\d+; kept none; released t1/);
+    expect([...fake.targets.values()].map((x) => x.url).sort()).toEqual(["https://a.example/", "https://b.example/", "https://u.example/"]);
+    // a reconnect right after our input replays the user's tab as created: still theirs
+    await call("browser_claim_tab", { tab: "t1" });
+    await call("browser_click", { tab: "t1", x: 40, y: 10 });
+    b.cdp.close();
+    for (let i = 0; i < 50 && b.cdp; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(textOf(await call("browser_cleanup", {}))).toMatch(/closed none; kept none; released t1/);
+    expect(fake.targets.has("U1")).toBe(true);
+  });
+
+  test("tabs stay ours across a reconnect; read offsets and sizes are bounded", async () => {
+    const { fake, b, call, open } = setup();
+    const tab = await open("https://x.example/");
+    b.cdp.close();
+    for (let i = 0; i < 50 && b.cdp; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(textOf(await call("browser_list_tabs", {}))).toContain(`${tab} [agent]`);
+    expect(textOf(await call("browser_cleanup", {}))).toContain(`closed ${tab}`);
+    expect([...fake.targets.values()].map((x) => x.url)).toEqual(["https://mail.example/inbox"]);
+    expect(textOf(await call("browser_read", { tab: "t1", offset: -1 }))).toContain("offset must be at least 0");
+    expect(textOf(await call("browser_read", { tab: "t1", max_chars: 1e9 }))).toContain("max_chars must be at most 100000");
+  });
+
   test("guide: own rules always; OpenAI policy docs loaded at runtime when installed", async () => {
     const home = tmp();
     expect(browserGuide(home)).toContain("Never open, drive or connect to Google Chrome");

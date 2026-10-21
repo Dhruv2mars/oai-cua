@@ -26,7 +26,7 @@ hooks, skills or settings, and it doesn't change your settings.
   That creates `~/.codex/computer-use/` and the engine's plugin manifest.
 - Accessibility and Screen Recording permission for Codex Computer Use, as for
   ChatGPT itself.
-- `node` 18+ on your `PATH`.
+- `node` 22+ on your `PATH` (the browser tools use its built-in `WebSocket`).
 
 **Options** (`/plugin configure oai-cua@oai-cua`, or `/config`):
 
@@ -129,7 +129,10 @@ API. Arguments are embedded as JSON literals.
   shows you that request through MCP elicitation, with the app, its bundle id,
   OpenAI's risk level and an "Always allow" choice. It asks once per app per
   session. Always-allowed apps are saved in `approvals.json` in the state dir
-  (mode `0600`). Delete an entry to be asked again. Some clients advertise
+  (mode `0600`). Delete an entry to be asked again. Apps always-allowed under
+  the old standalone installer (`~/.oai-cua/approvals.json`) are not carried
+  over to the plugin's state dir (`~/.claude/plugins/data/oai-cua-oai-cua/`);
+  copy the file there to keep them. Some clients advertise
   elicitation but answer it themselves within milliseconds. No person answers
   that fast. An instant `cancel` (headless Claude Code, about 4 ms) always
   counts as "this client can't ask". An instant `decline` counts only under an
@@ -370,7 +373,9 @@ rest are for development (the pre-rename `OPENAI_CUA_*` names are still read for
 - `OAI_CUA_APP`: ChatGPT.app path, used for the fallback and for OpenAI's docs.
 - `OAI_CUA_INSTRUCTIONS_MAX`: server instructions budget. Default 4096.
 - `CODEX_HOME`; `OAI_CUA_STATE_DIR` (the plugin's data directory under the
-  plugin, otherwise `~/.oai-cua`).
+  plugin, otherwise `~/.oai-cua`; a relative or unsubstituted value also means
+  `~/.oai-cua`). `shim.log` there is capped at about 1 MB, with the previous
+  one kept as `shim.log.1`.
 - `OAI_CUA_COMPUTER_HISTORY=1`: expose the Computer History tools. Off by default.
 - `OAI_CUA_ENABLE_JS=1`: enables `run_cua_js` and `reset_repl`.
 - `OAI_CUA_PYTHON`, `OAI_CUA_NATIVE_CLIENT`, `OAI_CUA_NATIVE_PARENT`:

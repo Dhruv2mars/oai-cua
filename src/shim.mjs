@@ -12,7 +12,7 @@ import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, VERSION, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
-import { Observations, limitOutput } from "./observe.mjs";
+import { Observations, limitOutput, MAX_TEXT } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
@@ -152,7 +152,7 @@ function plan(name, args) {
 
 export async function callTool(name, args = {}, signal) {
   if (isServiceTool(name)) return service.call(name, args, signal);
-  if (isBrowserTool(name)) return browser.call(name, args);
+  if (isBrowserTool(name)) { const r = await browser.call(name, args); return { ...r, content: limitOutput(r.content) }; }
   const bad = validate(name, args);
   if (bad) return text(bad, true);
   if (name === "get_app_state") focus.warm(); // helper ready before the first action
@@ -193,7 +193,7 @@ async function execute(name, args, signal) {
   const apps = targetApps(name, args);
   for (let attempt = 0; ; attempt++) {
     try {
-      const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
+      const run = () => engine.run(code, p.timeoutMs && Number(p.timeoutMs), signal, { allowAudio: name === "start_audio_recording" });
       const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
       if (apps.length && userStopped(r)) turn.stopped = true;
@@ -230,9 +230,11 @@ async function execute(name, args, signal) {
 }
 
 // A successful result, capped like Codex's tool output (about 25k tokens), with
-// OpenAI's first-use docs ahead of it once per session.
+// OpenAI's first-use docs ahead of it once per session. Trees cut by the cap
+// were not seen whole, so they are not diff baselines.
 function withDocs(out, isError = false) {
   const docs = firstUse.take();
+  if (out.reduce((n, c) => n + (c.type === "text" ? String(c.text ?? "").length : 0), 0) > MAX_TEXT) observations.forget();
   return { content: [...(docs ? [docs] : []), ...limitOutput(out.length ? out : [{ type: "text", text: "Done." }])], ...(isError ? { isError: true } : {}) };
 }
 

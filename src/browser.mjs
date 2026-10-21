@@ -17,6 +17,7 @@ const SHOTS_DIR = path.join(STATE_DIR, "screenshots");
 const KEEP_SHOTS = 30;
 let shotSeq = 0;
 const MAX_SNAPSHOT_CHARS = 60000;
+const OPENED_BY_INPUT_MS = 10000;
 
 // ---------------------------------------------------------------- tools
 
@@ -42,7 +43,7 @@ export const BROWSER_TOOLS = [
     inputSchema: obj({ tab: TAB, full: { type: "boolean", description: "Return the whole tree instead of a diff. Defaults to false" } }, ["tab"]) },
   { name: "browser_read", readOnly: true,
     description: "Read the visible text of a tab (title, URL and page text), including background tabs, in pages of max_chars.",
-    inputSchema: obj({ tab: TAB, offset: { type: "integer", description: "Character offset. Defaults to 0" }, max_chars: { type: "integer", description: "Defaults to 20000" } }, ["tab"]) },
+    inputSchema: obj({ tab: TAB, offset: { type: "integer", minimum: 0, description: "Character offset. Defaults to 0" }, max_chars: { type: "integer", minimum: 1, maximum: 100000, description: "Defaults to 20000" } }, ["tab"]) },
   { name: "browser_screenshot", readOnly: true,
     description: "JPEG screenshot of a tab's viewport, a full page, or one element (by ref). Works on background tabs. Viewport pixels equal CSS pixels, so x/y from it can be passed to browser_click. The file is also saved so you can show it to the user.",
     inputSchema: obj({ tab: TAB, ref: REF, full_page: { type: "boolean" } }, ["tab"]) },
@@ -102,6 +103,8 @@ export function validateBrowser(name, args) {
     if (p.type === "boolean" && typeof v !== "boolean") return `${k} must be a boolean`;
     if (p.type === "array" && (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string"))) return `${k} must be a non-empty array of strings`;
     if (p.enum && !p.enum.includes(v)) return `${k} must be one of ${p.enum.join(", ")}`;
+    if (p.minimum != null && v < p.minimum) return `${k} must be at least ${p.minimum}`;
+    if (p.maximum != null && v > p.maximum) return `${k} must be at most ${p.maximum}`;
   }
   if (args.ref != null && !/^e\d+$/.test(args.ref)) return "ref must look like e42 (from browser_snapshot)";
   if (name === "browser_click" && args.ref == null && (args.x == null || args.y == null)) return "browser_click needs ref or both x and y";
@@ -387,6 +390,7 @@ export class HeliumBrowser {
   }
 
   async #open() {
+    if (typeof WebSocket !== "function") throw new CdpError(`The browser tools need Node 22 or later (this is Node ${process.versions.node}).`);
     const eps = this.discover();
     if (!eps.length) throw new CdpError(NOT_ENABLED);
     const problems = [];
@@ -414,27 +418,36 @@ export class HeliumBrowser {
       const v = await cdp.send("Browser.getVersion").catch(() => ({}));
       this.label = `Helium (Chromium ${String(v.product ?? "").split("/")[1] ?? "?"}) via ${ep.source}`;
       this.log(`browser connected: ${this.label}`);
-      this.#reset();
       this.cdp = cdp;
       cdp.on((m) => this.#onEvent(m));
       await cdp.send("Target.setDiscoverTargets", { discover: true }).catch(() => {});
+      // Tabs tracked before a reconnect keep their ids and ownership if they are still open.
+      const live = new Set((await this.#pages().catch(() => [])).map((p) => p.targetId));
+      for (const id of [...this.tabs.keys()]) if (!live.has(id)) this.tabs.delete(id);
       return cdp;
     }
     const stale = problems.every((p) => /nothing (answering|listening)|connection refused/.test(p));
     throw new CdpError(stale ? `${NOT_ENABLED}\n(${problems.join("; ")})` : problems.join("\n"));
   }
 
-  #reset() {
-    this.tabs.clear();
-    this.aliases.clear();
+  // The connection is gone: CDP sessions and per-document state go with it.
+  #disconnected() {
+    for (const t of this.tabs.values()) {
+      // inputAt too: discovery replays existing tabs as new on reconnect
+      Object.assign(t, { session: null, dialog: null, loading: false, last: null, inputAt: 0 });
+      t.dialogWaiters.splice(0).forEach((w) => w());
+      t.loadWaiters.splice(0).forEach((w) => w());
+    }
   }
 
   #onEvent(m) {
-    if (m.method === "__closed") { this.log("browser connection closed"); this.cdp = null; this.#reset(); return; }
+    if (m.method === "__closed") { this.log("browser connection closed"); this.cdp = null; this.#disconnected(); return; }
     const p = m.params ?? {};
     if (m.method === "Target.targetCreated" && p.targetInfo?.type === "page") {
       const opener = p.targetInfo.openerId && this.tabs.get(p.targetInfo.openerId);
-      if (opener && (opener.owned || opener.claimed)) {
+      // In a claimed tab the user may be clicking too: only a tab opened just
+      // after our own input there is ours.
+      if (opener && (opener.owned || (opener.claimed && Date.now() - opener.inputAt < OPENED_BY_INPUT_MS))) {
         const t = this.#tab(p.targetInfo.targetId);
         t.owned = true;
         this.notices.push(`A new tab ${t.alias} was opened by ${opener.alias}; it is yours and will be cleaned up.`);
@@ -468,7 +481,7 @@ export class HeliumBrowser {
     let t = this.tabs.get(targetId);
     if (!t) {
       const alias = `t${this.nextAlias++}`;
-      t = { alias, targetId, owned: false, claimed: false, kept: null, session: null, dialog: null, dialogWaiters: [], loading: false, loadWaiters: [], last: null };
+      t = { alias, targetId, owned: false, claimed: false, kept: null, inputAt: 0, session: null, dialog: null, dialogWaiters: [], loading: false, loadWaiters: [], last: null };
       this.tabs.set(targetId, t);
       this.aliases.set(alias, targetId);
     }
@@ -508,6 +521,7 @@ export class HeliumBrowser {
   // Sends page input; returns early if the page opens a dialog, which blocks
   // the input command until the dialog is handled.
   async #input(t, method, params) {
+    t.inputAt = Date.now();
     let wake;
     const opened = new Promise((r) => { wake = r; t.dialogWaiters.push(r); });
     try {
@@ -547,10 +561,11 @@ export class HeliumBrowser {
 
   // Refs are valid only from the tab's latest snapshot of its current document:
   // a node of the previous document can still resolve, at its old position.
+  // Only tabs this session controls are scrolled to the element.
   async #node(t, ref) {
     if (!t.last?.refs.has(ref)) throw new CdpError(`ref ${ref} is not in ${t.alias}'s latest snapshot (the page changed or navigated); take a new browser_snapshot`);
     const backendNodeId = Number(ref.slice(1));
-    try { await this.#send(t, "DOM.scrollIntoViewIfNeeded", { backendNodeId }); }
+    try { await this.#send(t, t.owned || t.claimed ? "DOM.scrollIntoViewIfNeeded" : "DOM.describeNode", { backendNodeId }); }
     catch (e) { throw new CdpError(/No node|Could not find/i.test(e.message) ? `ref ${ref} no longer exists in ${t.alias}; take a new browser_snapshot` : e.message); }
     return backendNodeId;
   }

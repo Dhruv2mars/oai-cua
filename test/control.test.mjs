@@ -280,6 +280,26 @@ describe("stop, takeover and turns", () => {
   });
 });
 
+describe("state dir and log", () => {
+  const run = (env, code) => spawnSync(NODE, ["--input-type=module", "-e", code], { cwd: ROOT, env: { ...process.env, ...env }, encoding: "utf8" });
+  test("a relative or unsubstituted state dir falls back to ~/.oai-cua", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cua-home-"));
+    for (const v of ["${CLAUDE_PLUGIN_DATA}", "rel/dir"])
+      expect(run({ HOME: home, OAI_CUA_STATE_DIR: v }, `import { STATE_DIR } from "./src/lib.mjs"; console.log(STATE_DIR)`).stdout.trim()).toBe(path.join(home, ".oai-cua"));
+    expect(run({ HOME: home, OAI_CUA_STATE_DIR: "/tmp/x" }, `import { STATE_DIR } from "./src/lib.mjs"; console.log(STATE_DIR)`).stdout.trim()).toBe("/tmp/x");
+  });
+
+  test("the log rotates at about 1 MB while running, keeping one previous file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cua-log-"));
+    const r = run({ OAI_CUA_STATE_DIR: dir }, `import { logger } from "./src/lib.mjs"; const log = logger("t.log"); for (let i = 0; i < 30000; i++) log("x".repeat(100));`);
+    expect(r.status).toBe(0);
+    const size = (f) => fs.statSync(path.join(dir, f)).size;
+    expect(size("t.log")).toBeLessThan((1 << 20) * 1.1);
+    expect(size("t.log.1")).toBeGreaterThan(1 << 20);
+    expect(size("t.log.1")).toBeLessThan((1 << 20) * 1.1);
+  });
+});
+
 describe("diagnostics", () => {
   test("engine errors gain actionable guidance", async () => {
     const sb = sandbox({ FAKE_ERROR: "Computer Use server error -10005: cgWindowNotFound" }), s = startShim(sb);
@@ -361,6 +381,17 @@ describe("focus restore", () => {
       await sleep(350);
       expect(activated).toEqual([]);
     }
+  });
+
+  test("a helper that stops answering is dropped for osascript", async () => {
+    const g = new FocusGuard({ enabled: true });
+    let killed = false;
+    g.ready = Promise.resolve();
+    g.proc = { stdin: { write() {} }, kill() { killed = true; } };
+    const t = Date.now();
+    expect(await g.front()).toBe(null);
+    expect(Date.now() - t).toBeLessThan(4000);
+    expect([killed, g.proc, g.mode]).toEqual([true, null, "osascript"]);
   });
 
   test("app matching by name, bundle id or path", () => {
