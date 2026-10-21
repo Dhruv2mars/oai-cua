@@ -255,7 +255,7 @@ are not listed, and the bridge never contacts the recorder.
 
 Web pages in **Helium** get a real browser surface, comparable to what Codex's
 browser plugin gives the model for Chrome. It is driven over the Chrome DevTools
-Protocol with Node's built-in `WebSocket` (`src/browser.mjs`, no dependencies)
+Protocol with Node's built-in `WebSocket` (`src/browser.mjs` and `src/cdp.mjs`, no dependencies)
 and works on **background tabs**: Helium is never brought to the front.
 
 | Tool | What it does |

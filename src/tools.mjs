@@ -1,12 +1,12 @@
 // Claude-facing tool schemas and their translation into cua-repl JavaScript.
 // Arguments are embedded as JSON literals, never spliced as code.
 import { envFlag } from "./lib.mjs";
+import { checkArgs, obj } from "./schema.mjs";
 
 const APP = { type: "string", description: "App display name, full app path, or bundle identifier (e.g. \"TextEdit\", \"com.apple.TextEdit\"). If a display name fails, retry with the bundle id from list_apps" };
 const INDEX = { type: "integer", description: "Element index from the latest accessibility tree (get_app_state or an action's diff). Indices go stale after the UI changes" };
 const AFTER = " Returns the accessibility state afterwards, labelled as a full tree, a diff since your last observation of the app (\"-\" removed, \"+\" added or changed; elements not shown are unchanged and keep their indices) or no change; pass screenshot (or call get_app_state) to see the result.";
 const MODES = ["auto", "full", "text", "diff", "screenshot"];
-const obj = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
 const SHOT = { type: "boolean", description: "Also return a screenshot taken after the action, so the result (e.g. of a coordinate click) can be checked in the same call. Defaults to false" };
 const HOLD = (what) => ({ type: "integer", minimum: 0, maximum: 30000, description: `Milliseconds to hold ${what} before releasing it (0-30000)` });
 const CHORD = "Key names are xdotool-style and case-sensitive (Return, Tab, Escape, BackSpace, Delete, space, Up, Page_Down, F5, a, comma); modifiers are super (⌘), ctrl, alt (⌥), shift, and the aliases cmd, command, control, option, opt are accepted in any case";
@@ -140,20 +140,8 @@ export function validate(name, args) {
   if (!t) return TOOLS.some((x) => x.name === name)
     ? `${name} is disabled. It runs arbitrary JavaScript, so it must be enabled explicitly: turn on the plugin's enable_js option (/config, or OAI_CUA_ENABLE_JS=1 in the server's env) and reconnect.`
     : `unknown tool: ${name}`;
-  if (args == null || typeof args !== "object" || Array.isArray(args)) return "arguments must be an object";
-  const { properties, required } = t.inputSchema;
-  for (const k of required) if (args[k] == null || args[k] === "") return `missing required argument: ${k}`;
-  for (const [k, v] of Object.entries(args)) {
-    const p = properties[k];
-    if (!p) return `unknown argument: ${k}`;
-    if (p.type === "integer" && !Number.isInteger(Number(v))) return `${k} must be an integer`;
-    if (p.type === "number" && !Number.isFinite(Number(v))) return `${k} must be a number`;
-    if (p.type === "string" && typeof v !== "string") return `${k} must be a string`;
-    if (p.type === "boolean" && typeof v !== "boolean") return `${k} must be true or false`;
-    if (p.type === "array" && !Array.isArray(v)) return `${k} must be an array`;
-    if ((p.minimum != null && Number(v) < p.minimum) || (p.maximum != null && Number(v) > p.maximum)) return `${k} must be from ${p.minimum} to ${p.maximum}`;
-    if (p.enum && !p.enum.includes(v)) return `${k} must be one of ${p.enum.join(", ")}`;
-  }
+  const bad = checkArgs(t.inputSchema, args, { numericStrings: true });
+  if (bad) return bad;
   if (args.app != null && BLOCKED_APP.test(args.app)) return `refusing to use ${args.app}: Google Chrome is blocked by the user`;
   if (name === "click" && args.modifiers === "") return "modifiers must not be empty";
   if (name === "click" && args.element_index == null && (args.x == null || args.y == null)) return "click needs element_index or both x and y";

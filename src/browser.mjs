@@ -1,18 +1,14 @@
 // Helium browser surface: tabs, accessibility snapshots with stable refs,
 // input, screenshots, uploads, dialogs and tab cleanup, driven over the Chrome
-// DevTools Protocol with Node's built-in WebSocket. Only Helium is accepted:
-// every endpoint is traced to the process listening on it, and anything that
-// is not Helium (above all Google Chrome) is refused before connecting.
-import { execFileSync } from "node:child_process";
+// DevTools Protocol (see cdp.mjs for the Helium-only endpoint checks).
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { Cdp, CdpError, HELIUM_BUNDLE_ID, activateApp, discoverEndpoints, frontApp, verifyEndpoint } from "./cdp.mjs";
+import { parseKey } from "./keys.mjs";
 import { CODEX_HOME, STATE_DIR } from "./lib.mjs";
+import { checkArgs, obj, text } from "./schema.mjs";
+import { formatAXTree, quote, snapshotChanges } from "./snapshot.mjs";
 
-export const HELIUM_BUNDLE_ID = "net.imput.helium";
-export const HELIUM_DATA_DIR = path.join(os.homedir(), "Library/Application Support/net.imput.helium");
-const CHROME = /com\.google\.chrome|google chrome/i;
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const SHOTS_DIR = path.join(STATE_DIR, "screenshots");
 const KEEP_SHOTS = 30;
 let shotSeq = 0;
@@ -23,7 +19,6 @@ const OPENED_BY_INPUT_MS = 10000;
 
 const TAB = { type: "string", description: "Tab id from browser_list_tabs or browser_open_tab, e.g. \"t3\"" };
 const REF = { type: "string", description: "Element ref from browser_snapshot, e.g. \"e42\"" };
-const obj = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 
 export const BROWSER_TOOLS = [
   { name: "browser_list_tabs", readOnly: true,
@@ -60,10 +55,10 @@ export const BROWSER_TOOLS = [
     inputSchema: obj({ tab: TAB, key: { type: "string" }, ref: REF }, ["tab", "key"]) },
   { name: "browser_select",
     description: "Choose option(s) of a <select> element by ref, matching each value against option value or visible label.",
-    inputSchema: obj({ tab: TAB, ref: REF, values: { type: "array", items: { type: "string" } } }, ["tab", "ref", "values"]) },
+    inputSchema: obj({ tab: TAB, ref: REF, values: { type: "array", minItems: 1, items: { type: "string" } } }, ["tab", "ref", "values"]) },
   { name: "browser_upload_file",
     description: "Put local files (absolute paths) into an <input type=file> element by ref, without opening a file picker. Uploading transmits the files to the site: make sure the user asked for it.",
-    inputSchema: obj({ tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" } } }, ["tab", "ref", "paths"]) },
+    inputSchema: obj({ tab: TAB, ref: REF, paths: { type: "array", minItems: 1, items: { type: "string" } } }, ["tab", "ref", "paths"]) },
   { name: "browser_handle_dialog",
     description: "Accept or dismiss the JavaScript alert/confirm/prompt/beforeunload dialog open in a tab. The page is frozen until the dialog is handled.",
     inputSchema: obj({ tab: TAB, accept: { type: "boolean" }, prompt_text: { type: "string", description: "Text to enter for prompt() dialogs" } }, ["tab", "accept"]) },
@@ -90,244 +85,13 @@ export const browserToolReadOnly = (name) => !!BROWSER_TOOLS.find((t) => t.name 
 export function validateBrowser(name, args) {
   const tool = BROWSER_TOOLS.find((t) => t.name === name);
   if (!tool) return `unknown tool: ${name}`;
-  if (args == null || typeof args !== "object" || Array.isArray(args)) return "arguments must be an object";
-  const { properties, required } = tool.inputSchema;
-  for (const k of required) if (args[k] == null || (args[k] === "" && k !== "text")) return `missing required argument: ${k}`;
-  for (const [k, v] of Object.entries(args)) {
-    const p = properties[k];
-    if (!p) return `unknown argument: ${k}`;
-    if (v == null) continue;
-    if (p.type === "integer" && !Number.isInteger(v)) return `${k} must be an integer`;
-    if (p.type === "number" && !Number.isFinite(v)) return `${k} must be a number`;
-    if (p.type === "string" && typeof v !== "string") return `${k} must be a string`;
-    if (p.type === "boolean" && typeof v !== "boolean") return `${k} must be a boolean`;
-    if (p.type === "array" && (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string"))) return `${k} must be a non-empty array of strings`;
-    if (p.enum && !p.enum.includes(v)) return `${k} must be one of ${p.enum.join(", ")}`;
-    if (p.minimum != null && v < p.minimum) return `${k} must be at least ${p.minimum}`;
-    if (p.maximum != null && v > p.maximum) return `${k} must be at most ${p.maximum}`;
-  }
+  const bad = checkArgs(tool.inputSchema, args, { emptyOk: ["text"] });
+  if (bad) return bad;
   if (args.ref != null && !/^e\d+$/.test(args.ref)) return "ref must look like e42 (from browser_snapshot)";
   if (name === "browser_click" && args.ref == null && (args.x == null || args.y == null)) return "browser_click needs ref or both x and y";
   if (name === "browser_navigate" && (args.url == null) === (args.action == null)) return "browser_navigate needs exactly one of url or action";
   if (name === "browser_upload_file") for (const p of args.paths) if (!path.isAbsolute(p)) return `paths must be absolute: ${p}`;
   return null;
-}
-
-// ---------------------------------------------------------------- endpoints
-
-// Where Helium may be listening. The default is the user's own Helium profile,
-// which only listens after they enable "Allow remote debugging for this
-// browser instance" at chrome://inspect/#remote-debugging (no relaunch).
-export function discoverEndpoints(env = process.env) {
-  const out = [];
-  const spec = env.OAI_CUA_HELIUM_CDP?.trim();
-  if (spec) {
-    const m = /^(?:(ws|http)s?:\/\/)?(\[[^\]]+\]|[^:/]+)?:?(\d+)(\/.*)?$/.exec(spec.includes(":") || !/^\d+$/.test(spec) ? spec : `:${spec}`);
-    if (!m) throw new Error(`OAI_CUA_HELIUM_CDP is not a port or ws/http URL: ${spec}`);
-    out.push({ host: m[2] || "127.0.0.1", port: Number(m[3]), path: m[1] === "ws" ? m[4] : undefined, source: "OAI_CUA_HELIUM_CDP" });
-  }
-  const dirs = env.OAI_CUA_HELIUM_USER_DATA_DIR != null ? env.OAI_CUA_HELIUM_USER_DATA_DIR.split(":").filter(Boolean) : [HELIUM_DATA_DIR];
-  for (const dir of dirs) {
-    try {
-      const [port, p] = fs.readFileSync(path.join(dir, "DevToolsActivePort"), "utf8").trim().split("\n");
-      if (/^\d+$/.test(port)) out.push({ host: "127.0.0.1", port: Number(port), path: p?.startsWith("/devtools/") ? p : undefined, source: dir });
-    } catch {}
-  }
-  return out;
-}
-
-const run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-
-// The process listening on a local TCP port, with its app bundle id.
-export function portOwner(port) {
-  let pids;
-  try { pids = run("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]).split("\n").filter((l) => l.startsWith("p")).map((l) => Number(l.slice(1))); }
-  catch { return null; }
-  const owners = [...new Set(pids)].map((pid) => {
-    let exe = "", bundleId = "";
-    try { exe = run("/bin/ps", ["-o", "comm=", "-p", String(pid)]); } catch {}
-    const app = /^(.*?\.app)\/Contents\/MacOS\//.exec(exe)?.[1];
-    if (app) try { bundleId = run("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", path.join(app, "Contents/Info.plist")]); } catch {}
-    return { pid, exe, bundleId };
-  });
-  return owners.length ? owners : null;
-}
-
-// Returns an error string unless every listener is Helium. Chrome is refused
-// by bundle id and by executable path, whatever else is configured.
-export function checkOwners(owners) {
-  if (!owners?.length) return "nothing listening on that port";
-  for (const o of owners) {
-    if (CHROME.test(o.exe) || CHROME.test(o.bundleId)) return `refusing ${o.exe || o.bundleId}: Google Chrome is blocked by the user`;
-    if (o.bundleId !== HELIUM_BUNDLE_ID) return `refusing ${o.exe || `pid ${o.pid}`} (${o.bundleId || "no bundle id"}): only Helium is allowed`;
-  }
-  return null;
-}
-
-export function verifyEndpoint(ep) {
-  if (!LOOPBACK.has(ep.host)) return `refusing ${ep.host}:${ep.port}: only a local Helium is allowed`;
-  return checkOwners(portOwner(ep.port));
-}
-
-// The frontmost app's bundle id, and a way to give the front back to it.
-// Browser actions must not raise Helium; when a page does (e.g. a click that
-// opens a tab), the app the user was in is re-activated.
-export function frontApp() {
-  try { return /"CFBundleIdentifier"="([^"]+)"/.exec(run("/usr/bin/lsappinfo", ["info", "-only", "bundleid", run("/usr/bin/lsappinfo", ["front"])]))?.[1] ?? null; }
-  catch { return null; }
-}
-
-export function activateApp(bundleId) {
-  try { run("/usr/bin/osascript", ["-e", "on run argv", "-e", "tell application id (item 1 of argv) to activate", "-e", "end run", bundleId]); return true; }
-  catch { return false; }
-}
-
-// ---------------------------------------------------------------- CDP
-
-class CdpError extends Error {}
-
-class Cdp {
-  static open(url, timeoutMs) {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new CdpError("timeout")); }, timeoutMs);
-      ws.onopen = () => { clearTimeout(timer); resolve(new Cdp(ws)); };
-      ws.onerror = () => { clearTimeout(timer); reject(new CdpError("refused")); };
-    });
-  }
-
-  constructor(ws) {
-    this.ws = ws;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.listeners = new Set();
-    this.closed = false;
-    ws.onmessage = (e) => {
-      let m;
-      try { m = JSON.parse(typeof e.data === "string" ? e.data : Buffer.from(e.data).toString("utf8")); } catch { return; }
-      if (m.id != null) {
-        const p = this.pending.get(m.id);
-        if (!p) return;
-        this.pending.delete(m.id);
-        clearTimeout(p.timer);
-        m.error ? p.reject(new CdpError(m.error.message || JSON.stringify(m.error))) : p.resolve(m.result ?? {});
-      } else for (const fn of this.listeners) try { fn(m); } catch {}
-    };
-    ws.onclose = () => {
-      this.closed = true;
-      for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new CdpError("Helium closed the DevTools connection")); }
-      this.pending.clear();
-      for (const fn of this.listeners) try { fn({ method: "__closed" }); } catch {}
-    };
-  }
-
-  send(method, params = {}, sessionId, timeoutMs = 30000) {
-    return new Promise((resolve, reject) => {
-      if (this.closed) return reject(new CdpError("Helium closed the DevTools connection"));
-      const id = this.nextId++;
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new CdpError(`${method} timed out after ${timeoutMs}ms`)); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    });
-  }
-
-  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  close() { try { this.ws.close(); } catch {} }
-}
-
-// ---------------------------------------------------------------- snapshot
-
-const SKIP = new Set(["InlineTextBox", "LineBreak", "ListMarker"]);
-const TRANSPARENT = new Set(["generic", "none", "presentation", "LabelText", "strong", "emphasis", "Section", "MenuListPopup", "paragraph", "group", "code", "mark", "time", "superscript", "subscript", "Abbr", "Ruby", "insertion", "deletion"]);
-const PROPS = ["checked", "selected", "expanded", "pressed", "disabled", "required", "readonly", "invalid", "level", "focused", "modal"];
-const quote = (s, n = 200) => JSON.stringify(s.length > n ? s.slice(0, n) + "…" : s);
-
-export function formatAXTree(nodes) {
-  const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-  const root = nodes.find((n) => !n.parentId) ?? nodes[0];
-  const lines = [];
-  const walk = (n, depth, parentName) => {
-    if (!n) return;
-    const role = n.role?.value ?? "";
-    const name = String(n.name?.value ?? "").replace(/\s+/g, " ").trim();
-    const kids = (next, pn) => { for (const c of n.childIds ?? []) walk(byId.get(c), next, pn); };
-    if (SKIP.has(role)) return;
-    if (role === "StaticText") {
-      if (name && !(parentName && parentName.includes(name))) lines.push(`${"  ".repeat(depth)}- text: ${quote(name, 500)}`);
-      return;
-    }
-    if (n.ignored || role === "RootWebArea" || (TRANSPARENT.has(role) && !name)) return kids(depth, parentName);
-    const props = [];
-    for (const p of n.properties ?? []) {
-      if (!PROPS.includes(p.name)) continue;
-      const v = p.value?.value;
-      if (v === false || v === "false" || v == null) continue;
-      props.push(v === true || v === "true" ? p.name : `${p.name}=${v}`);
-    }
-    const url = role === "link" && n.properties?.find((p) => p.name === "url")?.value?.value;
-    const value = n.value?.value;
-    let line = `${"  ".repeat(depth)}- ${role}${name ? ` ${quote(name)}` : ""}`;
-    if (value != null && value !== "" && String(value) !== name) line += ` value=${quote(String(value), 120)}`;
-    if (props.length) line += ` [${props.join(", ")}]`;
-    if (url) line += ` [url=${quote(url, 120)}]`;
-    if (n.backendDOMNodeId != null) line += ` [ref=e${n.backendDOMNodeId}]`;
-    lines.push(line);
-    kids(depth + 1, name || parentName);
-  };
-  walk(root, 0, "");
-  return lines;
-}
-
-export function diffLines(prev, next) {
-  const count = new Map();
-  for (const l of prev) count.set(l, (count.get(l) ?? 0) + 1);
-  const added = [];
-  for (const l of next) {
-    const c = count.get(l) ?? 0;
-    if (c > 0) count.set(l, c - 1); else added.push(`+ ${l.trimStart().replace(/^- /, "")}`);
-  }
-  const removed = [];
-  for (const [l, c] of count) for (let i = 0; i < c; i++) removed.push(`- ${l.trimStart().replace(/^- /, "")}`);
-  return [...removed, ...added];
-}
-
-// ---------------------------------------------------------------- keys
-
-const MODS = { alt: 1, option: 1, ctrl: 2, control: 2, super: 4, cmd: 4, command: 4, meta: 4, shift: 8 };
-const NAMED = {
-  return: ["Enter", "Enter", 13, "\r"], enter: ["Enter", "Enter", 13, "\r"], kp_enter: ["Enter", "NumpadEnter", 13, "\r"],
-  tab: ["Tab", "Tab", 9], escape: ["Escape", "Escape", 27], esc: ["Escape", "Escape", 27],
-  backspace: ["Backspace", "Backspace", 8], delete: ["Delete", "Delete", 46], space: [" ", "Space", 32, " "],
-  up: ["ArrowUp", "ArrowUp", 38], down: ["ArrowDown", "ArrowDown", 40], left: ["ArrowLeft", "ArrowLeft", 37], right: ["ArrowRight", "ArrowRight", 39],
-  home: ["Home", "Home", 36], end: ["End", "End", 35], prior: ["PageUp", "PageUp", 33], page_up: ["PageUp", "PageUp", 33],
-  next: ["PageDown", "PageDown", 34], page_down: ["PageDown", "PageDown", 34], insert: ["Insert", "Insert", 45],
-};
-for (let i = 1; i <= 12; i++) NAMED[`f${i}`] = [`F${i}`, `F${i}`, 111 + i];
-// macOS editing shortcuts are browser commands, not key handlers.
-const MAC_COMMANDS = { a: "selectAll", c: "copy", x: "cut", v: "paste", z: "undo" };
-
-export function parseKey(spec) {
-  const parts = spec.split("+").map((s) => s.trim()).filter(Boolean);
-  if (!parts.length) throw new Error(`invalid key: ${spec}`);
-  let modifiers = 0;
-  for (const m of parts.slice(0, -1)) {
-    const bit = MODS[m.toLowerCase()];
-    if (!bit) throw new Error(`unknown modifier "${m}" in ${spec}`);
-    modifiers |= bit;
-  }
-  const k = parts.at(-1);
-  let key, code, keyCode, text;
-  if (NAMED[k.toLowerCase()]) [key, code, keyCode, text] = NAMED[k.toLowerCase()];
-  else if ([...k].length === 1) {
-    key = modifiers & 8 && /[a-z]/.test(k) ? k.toUpperCase() : k;
-    const up = k.toUpperCase();
-    code = /[A-Z]/.test(up) ? `Key${up}` : /\d/.test(k) ? `Digit${k}` : undefined;
-    keyCode = /[A-Z0-9]/.test(up) ? up.charCodeAt(0) : undefined;
-    text = key;
-  } else throw new Error(`unknown key "${k}"`);
-  if (modifiers & (1 | 2 | 4)) text = undefined; // chords insert no text
-  const command = modifiers === 4 ? MAC_COMMANDS[k.toLowerCase()] : modifiers === 12 && k.toLowerCase() === "z" ? "redo" : undefined;
-  return { key, code, keyCode, text, modifiers, command };
 }
 
 // ---------------------------------------------------------------- docs
@@ -362,7 +126,6 @@ export function browserGuide(codexHome = CODEX_HOME) {
 
 // ---------------------------------------------------------------- browser
 
-const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const NOT_ENABLED = `Helium is not reachable for automation, so the browser_* tools cannot run yet.
 Ask the user to enable it (do not change Helium settings yourself): in Helium, open chrome://inspect/#remote-debugging and turn on "Allow remote debugging for this browser instance". No restart is needed. Helium then asks "Allow remote debugging?" when a session first connects; the user clicks Allow.
@@ -618,7 +381,7 @@ export class HeliumBrowser {
     const head = `Tab ${t.alias} ${this.#flags(t)}`.trim() + `\nTitle: ${info.title ?? ""}\nURL: ${info.url ?? ""}`;
     let body;
     if (prev && !full) {
-      const d = diffLines(prev, lines);
+      const d = snapshotChanges(prev, lines);
       body = !d.length ? "No accessibility changes since the last snapshot." : d.join("\n").length < lines.join("\n").length ? `Accessibility diff since the last snapshot (- removed, + added):\n${d.join("\n")}` : null;
     }
     if (body == null) {

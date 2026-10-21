@@ -5,9 +5,9 @@
 // Claude client's elicitation support and are never answered by the bridge.
 import { NativeServer } from "./native.mjs";
 import { envFlag } from "./lib.mjs";
+import { obj, text } from "./schema.mjs";
 import { writeSkill, skillsDir } from "./skill.mjs";
 
-const obj = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const RULE = obj({
   scope: { type: "string", enum: ["app", "url"] },
   bundleID: { type: "string", description: "App bundle identifier (app rules only)" },
@@ -81,7 +81,6 @@ function check(schema, v, at) {
   return null;
 }
 
-const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 const parse = (r) => { try { return JSON.parse(r?.content?.find((c) => c.type === "text")?.text ?? ""); } catch { return null; } };
 
 export function createService({ log, idleMs, callTimeoutMs, canElicit, elicit }) {

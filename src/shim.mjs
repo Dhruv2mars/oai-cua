@@ -6,13 +6,15 @@
 //   node src/shim.mjs --doctor   live health check
 import { randomUUID } from "node:crypto";
 import { Approver, promptText } from "./approval.mjs";
-import { BROWSER_TOOLS, HeliumBrowser, discoverEndpoints, isBrowserTool, verifyEndpoint } from "./browser.mjs";
+import { BROWSER_TOOLS, HeliumBrowser, isBrowserTool } from "./browser.mjs";
+import { discoverEndpoints, verifyEndpoint } from "./cdp.mjs";
 import { diagnose, explain } from "./diagnose.mjs";
 import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, VERSION, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
 import { Observations, limitOutput, MAX_TEXT } from "./observe.mjs";
+import { text } from "./schema.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
@@ -113,7 +115,6 @@ const service = createService({
   elicit: (p) => askClient("elicitation/create", { message: String(p.message ?? ""), requestedSchema: p.requestedSchema ?? { type: "object", properties: {} } }),
 });
 
-const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 
 const observations = new Observations(); // what Claude has seen of each app, for diffs
 
