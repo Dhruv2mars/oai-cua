@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = new URL("../", import.meta.url);
 const FILES = ["package.json", ".claude-plugin/plugin.json"];
-const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", ...opts }).trim();
+const sh = (cmd, args, opts = {}) => (execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", ...opts }) ?? "").trim();
 const die = (m) => { console.error(`release: ${m}`); process.exit(1); };
 const read = (f) => fs.readFileSync(new URL(f, ROOT), "utf8");
 
