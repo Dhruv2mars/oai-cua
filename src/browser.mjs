@@ -433,7 +433,8 @@ export class HeliumBrowser {
   // The connection is gone: CDP sessions and per-document state go with it.
   #disconnected() {
     for (const t of this.tabs.values()) {
-      Object.assign(t, { session: null, dialog: null, loading: false, last: null });
+      // inputAt too: discovery replays existing tabs as new on reconnect
+      Object.assign(t, { session: null, dialog: null, loading: false, last: null, inputAt: 0 });
       t.dialogWaiters.splice(0).forEach((w) => w());
       t.loadWaiters.splice(0).forEach((w) => w());
     }

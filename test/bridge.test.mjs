@@ -351,14 +351,17 @@ describe("guidance", () => {
 });
 
 describe("observation", () => {
-  test("a tree too long to be returned whole is not the next diff's baseline", () => {
-    const o = new Observations();
-    const big = `Window: "doc"\n${Array.from({ length: 4000 }, (_, i) => `\t${i} button Action ${i} ${"x".repeat(30)}`).join("\n")}`;
-    expect(o.render("A", big)).toStartWith("Full accessibility tree");
-    expect(o.has("A")).toBe(false);
-    expect(o.render("A", big)).toStartWith("Full accessibility tree");
-    o.render("B", "Window: \"b\"\n\t0 button Go");
-    expect(o.render("B", "Window: \"b\"\n\t0 button Go")).toContain("No change");
+  test("trees cut by the output cap are not the next diff's baseline", async () => {
+    const sb = sandbox(), file = path.join(sb.dir, "trees.json");
+    sb.env.FAKE_TREE_FILE = file;
+    const s = startShim(sb);
+    const big = (w) => `Window: "${w}"\n${Array.from({ length: 1700 }, (_, i) => `\t${i} button Action ${i} ${"x".repeat(25)}`).join("\n")}`;
+    fs.writeFileSync(file, JSON.stringify({ TextEdit: big("a"), Notes: big("b") })); // each fits, together they don't
+    await s.init();
+    const r = await s.call("batch", { steps: [{ tool: "press_key", args: { app: "TextEdit", key: "a" } }, { tool: "press_key", args: { app: "Notes", key: "a" } }] });
+    expect(textOf(r)).toContain("characters truncated");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toStartWith("Full accessibility tree");
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("No change");
   });
 
   const REST = Array.from({ length: 20 }, (_, i) => `\n\t\t${i + 2} button Action ${i}`).join("");

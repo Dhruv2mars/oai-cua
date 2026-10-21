@@ -205,7 +205,7 @@ describe("browser: tools against fake Helium", () => {
   });
 
   test("a claimed tab's new tabs are ours only right after our input; screenshots never scroll the user's tabs", async () => {
-    const { fake, call } = setup({ userTabs: [{ title: "A", url: "https://a.example/" }, { title: "B", url: "https://b.example/" }] });
+    const { fake, b, call } = setup({ userTabs: [{ title: "A", url: "https://a.example/" }, { title: "B", url: "https://b.example/" }] });
     await call("browser_list_tabs", {}); // t1, t2
     await call("browser_snapshot", { tab: "t2" });
     await call("browser_screenshot", { tab: "t2", ref: "e10" }); // user's tab: no scrolling
@@ -218,6 +218,13 @@ describe("browser: tools against fake Helium", () => {
     expect(textOf(await call("browser_click", { tab: "t1", x: 40, y: 170 }))).toMatch(/A new tab t\d+ was opened by t1/); // ours: our click opened it
     expect(textOf(await call("browser_cleanup", {}))).toMatch(/closed t\d+; kept none; released t1/);
     expect([...fake.targets.values()].map((x) => x.url).sort()).toEqual(["https://a.example/", "https://b.example/", "https://u.example/"]);
+    // a reconnect right after our input replays the user's tab as created: still theirs
+    await call("browser_claim_tab", { tab: "t1" });
+    await call("browser_click", { tab: "t1", x: 40, y: 10 });
+    b.cdp.close();
+    for (let i = 0; i < 50 && b.cdp; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(textOf(await call("browser_cleanup", {}))).toMatch(/closed none; kept none; released t1/);
+    expect(fake.targets.has("U1")).toBe(true);
   });
 
   test("tabs stay ours across a reconnect; read offsets and sizes are bounded", async () => {

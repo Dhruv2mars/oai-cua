@@ -12,7 +12,7 @@ import { Engine, EngineError } from "./engine.mjs";
 import { FocusGuard } from "./focus.mjs";
 import { FIRST_USE_URI, FirstUse, GUIDE_URI, PROMPTS, bootstrapText, buildInstructions, discover, getPrompt, guideText, listResources, readResource } from "./guidance.mjs";
 import { STATE_DIR, VERSION, findRuntime, logger, makeLineReader, writeLine } from "./lib.mjs";
-import { Observations, limitOutput } from "./observe.mjs";
+import { Observations, limitOutput, MAX_TEXT } from "./observe.mjs";
 import { createService, isServiceTool, serviceTools } from "./service.mjs";
 import { BATCHABLE, TOOL_NAMES, batchSteps, buildCell, extractOutput, isReadOnly, isUiAction, publicTools, targetApps, validate } from "./tools.mjs";
 
@@ -230,9 +230,11 @@ async function execute(name, args, signal) {
 }
 
 // A successful result, capped like Codex's tool output (about 25k tokens), with
-// OpenAI's first-use docs ahead of it once per session.
+// OpenAI's first-use docs ahead of it once per session. Trees cut by the cap
+// were not seen whole, so they are not diff baselines.
 function withDocs(out, isError = false) {
   const docs = firstUse.take();
+  if (out.reduce((n, c) => n + (c.type === "text" ? String(c.text ?? "").length : 0), 0) > MAX_TEXT) observations.forget();
   return { content: [...(docs ? [docs] : []), ...limitOutput(out.length ? out : [{ type: "text", text: "Done." }])], ...(isError ? { isError: true } : {}) };
 }
 
