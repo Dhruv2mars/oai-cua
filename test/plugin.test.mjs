@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { changelogSection } from "../scripts/release.mjs";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const json = (f) => JSON.parse(fs.readFileSync(path.join(ROOT, f), "utf8"));
@@ -13,6 +14,12 @@ const mcp = json(".mcp.json");
 describe("plugin", () => {
   test("plugin.json version matches package.json", () => {
     expect(plugin.version).toBe(pkg.version);
+  });
+
+  test("CHANGELOG.md has a section for this version (the release notes)", () => {
+    expect(changelogSection(fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8"), pkg.version)).toBeTruthy();
+    expect(changelogSection("## 1.0.0 (x)\nA\n## 1.0.1\nB", "1.0.1")).toBe("B");
+    expect(changelogSection("## 1.0.10\nA", "1.0.1")).toBe(null);
   });
 
   test("the repo is its own marketplace with one entry at ./", () => {

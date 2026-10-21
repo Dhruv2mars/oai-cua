@@ -8,6 +8,10 @@ No OpenAI model is called. No OpenAI binaries are vendored here. **The ChatGPT
 app does not need to be running.** It only has to be installed, because the
 engine ships inside it.
 
+Unofficial and not affiliated with OpenAI. It relies on private interfaces
+inside the ChatGPT app, so a ChatGPT update can break it until a fix ships
+(see [Limits](#limits)).
+
 ## Install
 
 ```
@@ -355,12 +359,16 @@ bun run doctor          # live: runtime discovery + engine + list_apps timing
 claude --plugin-dir .   # load this checkout as the plugin
 ```
 
-Bun runs the tests; the shim itself runs on Node with no dependencies. To
-release, bump `version` in both `package.json` and `.claude-plugin/plugin.json`
-(a test keeps them equal); installed plugins only update when it changes.
+Bun runs the tests; the shim itself runs on Node with no dependencies. CI runs
+`bun run check` on macOS with Node 22. To release: `bun run release bump
+<version>` sets the version in `package.json` and `.claude-plugin/plugin.json`
+(installed plugins only update when it changes); add its section to
+`CHANGELOG.md` and merge that. Then, on an up-to-date `main`, `bun run release
+publish` runs the checks, tags `v<version>` and creates the GitHub release from
+the changelog.
 
 Environment overrides. The plugin sets the state dir and its three options; the
-rest are for development (the pre-rename `OPENAI_CUA_*` names are still read for one release):
+rest are for development:
 
 - `OAI_CUA_IDLE_MS`: idle release. Default 300000; 0 disables it.
 - `OAI_CUA_CALL_TIMEOUT_MS`: per-call timeout. Default 60000.
