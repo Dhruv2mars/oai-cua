@@ -8,6 +8,10 @@ No OpenAI model is called. No OpenAI binaries are vendored here. **The ChatGPT
 app does not need to be running.** It only has to be installed, because the
 engine ships inside it.
 
+Unofficial and not affiliated with OpenAI. It relies on private interfaces
+inside the ChatGPT app, so a ChatGPT update can break it until a fix ships
+(see [Limits](#limits)).
+
 ## Install
 
 ```

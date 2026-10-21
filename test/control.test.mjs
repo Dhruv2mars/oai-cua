@@ -291,7 +291,7 @@ describe("state dir and log", () => {
 
   test("the log rotates at about 1 MB while running, keeping one previous file", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cua-log-"));
-    const r = run({ OAI_CUA_STATE_DIR: dir }, `import { logger } from "./src/lib.mjs"; const log = logger("t.log"); for (let i = 0; i < 30000; i++) log("x".repeat(100));`);
+    const r = run({ OAI_CUA_STATE_DIR: dir }, `import { logger } from "./src/lib.mjs"; const log = logger("t.log"); for (let i = 0; i < 40; i++) log("x".repeat(64 << 10));`);
     expect(r.status).toBe(0);
     const size = (f) => fs.statSync(path.join(dir, f)).size;
     expect(size("t.log")).toBeLessThan((1 << 20) * 1.1);

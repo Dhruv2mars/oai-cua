@@ -10,7 +10,7 @@ First stable release.
 - A numeric-string `timeout_ms` works. An accessibility tree too long to be returned whole is not used as the next diff's baseline.
 - `shim.log` rotates at about 1 MB. A relative or unsubstituted `OAI_CUA_STATE_DIR` falls back to `~/.oai-cua`.
 - Removed: the `OPENAI_CUA_*` environment names (use `OAI_CUA_*`), and the package `bin` entry.
-- MIT license, CI on macOS, CHANGELOG and a release script.
+- MIT license, CI on macOS, CHANGELOG and a release script. The README says up front that this is unofficial and depends on private ChatGPT interfaces.
 
 ## 0.2.2 (2026-10-20)
 
