@@ -26,7 +26,7 @@ hooks, skills or settings, and it doesn't change your settings.
   That creates `~/.codex/computer-use/` and the engine's plugin manifest.
 - Accessibility and Screen Recording permission for Codex Computer Use, as for
   ChatGPT itself.
-- `node` 18+ on your `PATH`.
+- `node` 22+ on your `PATH` (the browser tools use its built-in `WebSocket`).
 
 **Options** (`/plugin configure oai-cua@oai-cua`, or `/config`):
 

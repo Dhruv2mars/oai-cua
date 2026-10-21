@@ -59,6 +59,9 @@ export class FocusGuard {
       const src = fs.readFileSync(SOURCE);
       const bin = path.join(this.binDir, `focus-helper-${crypto.createHash("sha256").update(src).digest("hex").slice(0, 12)}`);
       if (!fs.existsSync(bin)) {
+        // /usr/bin/swiftc is a stub that offers to install the Command Line Tools
+        // (a dialog, every session) when no developer directory is set up.
+        await new Promise((res, rej) => execFile("/usr/bin/xcode-select", ["-p"], (e, out) => (e || !fs.existsSync(out.trim()) ? rej(new Error("no Xcode or Command Line Tools")) : res())));
         fs.mkdirSync(this.binDir, { recursive: true, mode: 0o700 });
         const tmp = `${bin}.${process.pid}.tmp`;
         await new Promise((res, rej) => execFile("/usr/bin/swiftc", ["-O", SOURCE, "-o", tmp], { timeout: 120000 }, (e) => (e ? rej(e) : res())));

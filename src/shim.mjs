@@ -193,7 +193,7 @@ async function execute(name, args, signal) {
   const apps = targetApps(name, args);
   for (let attempt = 0; ; attempt++) {
     try {
-      const run = () => engine.run(code, p.timeoutMs, signal, { allowAudio: name === "start_audio_recording" });
+      const run = () => engine.run(code, p.timeoutMs && Number(p.timeoutMs), signal, { allowAudio: name === "start_audio_recording" });
       const r = await (isUiAction(name) ? focus.around(apps, run) : run());
       firstUse.add([...engine.takeFirstUse(), ...bootstrapText(r.content, START)]);
       if (apps.length && userStopped(r)) turn.stopped = true;

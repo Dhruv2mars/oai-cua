@@ -9,6 +9,6 @@
     "check": "for f in src/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
     "doctor": "node src/shim.mjs --doctor"
   },
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=22" },
   "license": "MIT"
 }

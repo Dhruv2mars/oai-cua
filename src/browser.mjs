@@ -387,6 +387,7 @@ export class HeliumBrowser {
   }
 
   async #open() {
+    if (typeof WebSocket !== "function") throw new CdpError(`The browser tools need Node 22 or later (this is Node ${process.versions.node}).`);
     const eps = this.discover();
     if (!eps.length) throw new CdpError(NOT_ENABLED);
     const problems = [];

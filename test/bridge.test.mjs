@@ -652,6 +652,16 @@ describe("lifecycle", () => {
     expect(spawns(sb).length).toBe(2); // replaced
   });
 
+  test("a numeric-string timeout_ms is used as a number", async () => {
+    const sb = sandbox({ FAKE_HANG: "1" }), s = startShim(sb);
+    await s.init();
+    const t = Date.now();
+    const r = await s.call("batch", { app: "TextEdit", timeout_ms: "1000", steps: [{ tool: "press_key", args: { key: "Tab" } }] });
+    expect(textOf(r)).toContain("timed out");
+    expect(Date.now() - t).toBeLessThan(5000); // "1000" + 1000 would be "10001000" ms
+    expect(sb.events().filter((e) => e.ev === "cell").at(-1).timeout_ms).toBe(1000);
+  });
+
   test("cancelled calls: queued ones never run, running ones are stopped, no response sent", async () => {
     const sb = sandbox({ FAKE_CELL_DELAY_MS: "400" }), s = startShim(sb);
     await s.init();
