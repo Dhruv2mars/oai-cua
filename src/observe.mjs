@@ -99,16 +99,20 @@ export class Observations {
   has(app) { return this.seen.has(app); }
   forget(app) { if (app == null) this.seen.clear(); else this.seen.delete(app); }
   // Label and return a fresh full tree, as a diff when allowed and smaller.
+  // A tree or diff too long to reach the model whole (limitOutput cuts it) is
+  // not a baseline: the next observation is a full tree again.
   render(app, tree, { full = false } = {}) {
     const prev = this.seen.get(app);
-    this.seen.set(app, tree);
+    let out = null;
     if (!full && prev != null) {
       const d = diffTree(prev, tree);
-      if (d === "") return `No change in the accessibility tree since your last observation of ${app}; all element indices are still valid.`;
-      if (d != null)
-        return `Accessibility diff since your last observation of ${app} ("-" removed, "+" added or changed, indented lines are unchanged context). Elements not shown are unchanged and keep their indices:\n${d}`;
+      if (d === "") out = `No change in the accessibility tree since your last observation of ${app}; all element indices are still valid.`;
+      else if (d != null)
+        out = `Accessibility diff since your last observation of ${app} ("-" removed, "+" added or changed, indented lines are unchanged context). Elements not shown are unchanged and keep their indices:\n${d}`;
     }
-    return `Full accessibility tree of ${app}:\n${tree}`;
+    out ??= `Full accessibility tree of ${app}:\n${tree}`;
+    if (out.length > MAX_TEXT) this.seen.delete(app); else this.seen.set(app, tree);
+    return out;
   }
 }
 

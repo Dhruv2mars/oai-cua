@@ -152,7 +152,7 @@ function plan(name, args) {
 
 export async function callTool(name, args = {}, signal) {
   if (isServiceTool(name)) return service.call(name, args, signal);
-  if (isBrowserTool(name)) return browser.call(name, args);
+  if (isBrowserTool(name)) { const r = await browser.call(name, args); return { ...r, content: limitOutput(r.content) }; }
   const bad = validate(name, args);
   if (bad) return text(bad, true);
   if (name === "get_app_state") focus.warm(); // helper ready before the first action

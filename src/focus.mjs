@@ -19,6 +19,7 @@ import { STATE_DIR, makeLineReader } from "./lib.mjs";
 const SOURCE = fileURLToPath(new URL("./focus-helper.swift", import.meta.url));
 const SETTLE_MS = 300; // keep guarding briefly after the action for late self-activation
 const MAX_RESTORES = 3;  // per action; never fight an app (or the user) indefinitely
+const HELPER_TIMEOUT_MS = 2000; // a helper that stops answering is dropped for osascript
 
 const JXA = `ObjC.import("AppKit");
 function run(argv) {
@@ -47,7 +48,6 @@ export class FocusGuard {
     this.proc = null;
     this.waiters = [];
     this.guard = null; // the action being guarded
-    this.restores = 0;
     this.ready = null;
   }
 
@@ -85,7 +85,19 @@ export class FocusGuard {
 
   async #cmd(...argv) {
     if (this.ready) await this.ready;
-    if (this.proc) return new Promise((r) => { this.waiters.push(r); this.proc.stdin.write(argv.join(" ") + "\n"); });
+    const p = this.proc;
+    if (p) return new Promise((r) => {
+      const t = setTimeout(() => {
+        this.log("focus helper stopped answering; using osascript");
+        this.proc = null;
+        this.mode = "osascript";
+        try { p.kill(); } catch {}
+        for (const w of this.waiters.splice(0)) w(null);
+      }, HELPER_TIMEOUT_MS);
+      t.unref?.();
+      this.waiters.push((m) => { clearTimeout(t); r(m); });
+      p.stdin.write(argv.join(" ") + "\n");
+    });
     return new Promise((r) => execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", JXA, ...argv.map(String)], { timeout: 5000 }, (e, out) => {
       try { r(e ? null : JSON.parse(out)); } catch { r(null); }
     }));
@@ -127,7 +139,6 @@ export class FocusGuard {
     const t = Date.now();
     const r = await this.activate(before.pid).catch(() => null);
     guard.busy = false;
-    this.restores++;
     this.log(`focus: ${now.bundle || now.name} took the front; re-activated ${before.bundle || before.name} (${r?.ok ? "ok" : "failed"}, ${Date.now() - t}ms)`);
     return !!r?.ok;
   }

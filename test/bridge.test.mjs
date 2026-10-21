@@ -2,7 +2,7 @@
 // Run with `bun run check` (bun test runner; the shim itself runs on Node).
 import { afterEach, describe, expect, test } from "bun:test";
 import { FirstUse } from "../src/guidance.mjs";
-import { diffTree, limitOutput } from "../src/observe.mjs";
+import { Observations, diffTree, limitOutput } from "../src/observe.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -351,6 +351,16 @@ describe("guidance", () => {
 });
 
 describe("observation", () => {
+  test("a tree too long to be returned whole is not the next diff's baseline", () => {
+    const o = new Observations();
+    const big = `Window: "doc"\n${Array.from({ length: 4000 }, (_, i) => `\t${i} button Action ${i} ${"x".repeat(30)}`).join("\n")}`;
+    expect(o.render("A", big)).toStartWith("Full accessibility tree");
+    expect(o.has("A")).toBe(false);
+    expect(o.render("A", big)).toStartWith("Full accessibility tree");
+    o.render("B", "Window: \"b\"\n\t0 button Go");
+    expect(o.render("B", "Window: \"b\"\n\t0 button Go")).toContain("No change");
+  });
+
   const REST = Array.from({ length: 20 }, (_, i) => `\n\t\t${i + 2} button Action ${i}`).join("");
   const T1 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello${REST}`;
   const T2 = `Window: "doc"\n\t0 standard window doc\n\t\t1 text area Value: hello world\nsecond line${REST}`;
