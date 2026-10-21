@@ -1,12 +1,13 @@
 {
   "name": "oai-cua",
-  "version": "0.2.2",
+  "version": "1.0.0",
   "private": true,
   "description": "Use OpenAI's installed computer-use engine from Claude Code on macOS, without the ChatGPT app running and without calling any OpenAI model.",
   "type": "module",
   "scripts": {
-    "check": "for f in src/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
-    "doctor": "node src/shim.mjs --doctor"
+    "check": "for f in src/*.mjs test/*.mjs scripts/*.mjs; do node --check \"$f\" || exit 1; done && bun test --timeout 20000",
+    "doctor": "node src/shim.mjs --doctor",
+    "release": "node scripts/release.mjs"
   },
   "engines": { "node": ">=22" },
   "license": "MIT"

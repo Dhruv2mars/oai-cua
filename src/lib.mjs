@@ -1,5 +1,4 @@
 // Shared helpers: paths, private logging, NDJSON framing, runtime discovery.
-import "./env.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
