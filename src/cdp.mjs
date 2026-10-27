@@ -35,10 +35,13 @@ export function discoverEndpoints(env = process.env) {
 
 const run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
 
+// lsof is in /usr/sbin on macOS and /usr/bin on Linux (the CI).
+const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((p) => fs.existsSync(p)) ?? "/usr/sbin/lsof";
+
 // The process listening on a local TCP port, with its app bundle id.
 export function portOwner(port) {
   let pids;
-  try { pids = run("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]).split("\n").filter((l) => l.startsWith("p")).map((l) => Number(l.slice(1))); }
+  try { pids = run(LSOF, ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"]).split("\n").filter((l) => l.startsWith("p")).map((l) => Number(l.slice(1))); }
   catch { return null; }
   const owners = [...new Set(pids)].map((pid) => {
     let exe = "", bundleId = "";
