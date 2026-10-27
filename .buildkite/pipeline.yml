@@ -1,16 +1,14 @@
-# Buildkite CI (replaces .github/workflows now that this repo lives on Entire).
-# Runs on the free hosted linux-small queue; checkout comes from the Entire plugin Buildkite adds to every job.
+# Buildkite CI (replaces .github/workflows/check.yml now that this repo lives on Entire).
+# The plugin is macOS-only and its tests need macOS, so this runs on a hosted macOS queue (like the old macos-latest job).
+# Checkout comes from the Entire plugin Buildkite adds to every job.
 steps:
-  - label: ":bun: check"
+  - label: ":apple: check"
     key: check
-    agents: { queue: linux-small }
+    agents: { queue: macos-medium }
     timeout_in_minutes: 20
-    plugins:
-      - docker#v5.12.0:
-          image: node:22
-          environment: [OAI_CUA_PYTHON=/usr/bin/python3]
     command: |
-      apt-get update -qq && apt-get install -y -qq python3 lsof >/dev/null
-      npm i -g --silent bun
+      command -v node >/dev/null || brew install --quiet node@22
+      command -v bun >/dev/null || { curl -fsSL https://bun.sh/install | bash >/dev/null; }
+      export PATH="$$HOME/.bun/bin:/opt/homebrew/opt/node@22/bin:$$PATH"
       node --version && bun --version
       bun run check
