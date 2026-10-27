@@ -1,0 +1,37 @@
+{
+  "id": "trail-confidence",
+  "display_name": "Confidence Eval",
+  "enabled": true,
+  "scope": "trail",
+  "runtime": {
+    "kind": "prompt_runner",
+    "agent": "claude",
+    "timeout_ms": 300000,
+    "sandbox": {
+      "base_template": "claude",
+      "repo_token": "read"
+    }
+  },
+  "automation": {
+    "kind": "trail_prompt"
+  },
+  "prompt": {
+    "template": "You are a confidence evaluator. Analyze the changes on branch \"{{branch}}\" compared to \"{{base_branch}}\".\n\nThis repository is a macOS Claude Code plugin (Node 22+ ESM scripts under scripts/ and src/, tests under test/) that exposes OpenAI's computer-use engine, installed inside the ChatGPT app, as an MCP server, plus a Helium browser surface driven over CDP. It relies on private, unversioned interfaces and drives real input on a user's machine, so correctness depends on behavior that is hard to unit-test.\n\nRun `git diff origin/{{base_branch}}...HEAD` to see the changes, then score **confidence** from 0 to 100 (higher = more confident the changes are correct and well-tested). Weigh:\n- Test coverage in test/ for each changed behavior, including failure, timeout, and cleanup paths, not just the happy path.\n- Whether the logic touches engine protocol/handshake, the MCP tool schema, per-app approval, stop/turn handling, takeover, or focus restore, and whether those interactions are exercised.\n- Browser/CDP behavior: tab ownership, background-tab input, races when opening or closing tabs, WebSocket lifecycle.\n- Observation modes and diffs: per-session state, bounded output/log/screenshot size.\n- Assumptions about the installed ChatGPT app layout, ~/.codex/computer-use paths, Node version, or macOS permissions that the change cannot verify.\n- Plugin config options (enable_js, computer_history, approval) and their defaults behaving as documented.\n\nBands: 85-100 = small, well-tested change with assertions on edge and error paths; 60-84 = reasonable tests but some engine/browser/approval paths unverified; 30-59 = behavior change in input, approval, or browser tab handling with weak or mock-only tests; 0-29 = untested changes to approval, input injection, process/tab lifecycle, or dependence on guessed private-interface behavior.\n\nOutput ONLY this JSON object as the very last line of your response:\n\n{\"value\": <number 0-100>, \"rationale\": \"<1-2 sentence explanation>\"}"
+  },
+  "select": {
+    "trigger_types": [
+      "api",
+      "push"
+    ]
+  },
+  "output": {
+    "adapter": "last_json_line",
+    "result_type": "trail_monitor",
+    "trail_monitor": {
+      "key": "confidence",
+      "label": "Confidence",
+      "value_type": "percent",
+      "polarity": "higher_is_better"
+    }
+  }
+}

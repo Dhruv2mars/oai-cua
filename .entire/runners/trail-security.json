@@ -1,0 +1,37 @@
+{
+  "id": "trail-security",
+  "display_name": "Security Review",
+  "enabled": true,
+  "scope": "trail",
+  "runtime": {
+    "kind": "prompt_runner",
+    "agent": "claude",
+    "timeout_ms": 300000,
+    "sandbox": {
+      "base_template": "claude",
+      "repo_token": "read"
+    }
+  },
+  "automation": {
+    "kind": "trail_prompt"
+  },
+  "prompt": {
+    "template": "You are a security risk evaluator. Analyze the changes on branch \"{{branch}}\" compared to \"{{base_branch}}\".\n\nThis repository is a macOS Claude Code plugin that gives an AI agent control of the user's desktop and a Helium browser via an MCP server wrapping OpenAI's computer-use engine from the installed ChatGPT app. The trust boundary is between the model/tool input (and any on-screen or web content it reads, which may carry prompt injection) and the user's machine, accounts, and data.\n\nRun `git diff origin/{{base_branch}}...HEAD` to see the changes, then score **security risk** from 0 to 100 (review adversarially; higher = more suspicious or insecure). Examine:\n- Approval bypass: control of an app without the configured approval mode, approval persisted or shared across apps/sessions, deny-unknown not denying, auto mode widened.\n- Arbitrary code execution: run_cua_js/reset_repl reachable without opt-in, eval or Function on tool input, shell or child-process commands built from unvalidated strings, unsafe spawn flags.\n- Browser/CDP: debugging port exposed beyond localhost, unauthenticated WebSocket targets, navigation to file:/javascript:/chrome: URLs, access to tabs or profiles the plugin does not own, cookie or storage exfiltration.\n- Sensitive data: screenshots, accessibility trees, Computer History, clipboard/paste contents, and tokens or credentials leaked into logs, state files, error messages, or tool output; world-readable files in the data directory; unbounded retention.\n- Path and file handling: path traversal or symlink issues for screenshots/logs/state, trusting paths inside the ChatGPT app bundle or ~/.codex without validation, vendoring or downloading binaries, new dependencies or network calls (this plugin should call no OpenAI model and add no remote endpoints).\n- Supply chain and install: install/update/release scripts that fetch or execute remote code, manifest or MCP config changes that alter what runs.\n\nBands: 0-15 = no security-relevant change; 16-40 = minor hardening gaps or bounded information leaks; 41-70 = input validation gaps, weakened logging hygiene, or loosened browser/file handling; 71-100 = approval bypass, default-on code execution, exposed CDP/network surface, credential or screen-content leakage, or remote code fetched and run.\n\nOutput ONLY this JSON object as the very last line of your response:\n\n{\"value\": <number 0-100>, \"rationale\": \"<1-2 sentence explanation>\"}"
+  },
+  "select": {
+    "trigger_types": [
+      "api",
+      "push"
+    ]
+  },
+  "output": {
+    "adapter": "last_json_line",
+    "result_type": "trail_monitor",
+    "trail_monitor": {
+      "key": "security",
+      "label": "Security",
+      "value_type": "percent",
+      "polarity": "lower_is_better"
+    }
+  }
+}

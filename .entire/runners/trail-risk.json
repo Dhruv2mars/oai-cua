@@ -1,0 +1,37 @@
+{
+  "id": "trail-risk",
+  "display_name": "Risk Eval",
+  "enabled": true,
+  "scope": "trail",
+  "runtime": {
+    "kind": "prompt_runner",
+    "agent": "claude",
+    "timeout_ms": 300000,
+    "sandbox": {
+      "base_template": "claude",
+      "repo_token": "read"
+    }
+  },
+  "automation": {
+    "kind": "trail_prompt"
+  },
+  "prompt": {
+    "template": "You are a risk evaluator. Analyze the changes on branch \"{{branch}}\" compared to \"{{base_branch}}\".\n\nThis repository is a macOS Claude Code plugin that lets an AI agent control a user's real desktop (clicks, keys, paste, screenshots, accessibility trees) via OpenAI's computer-use engine from the installed ChatGPT app, plus a Helium browser surface over CDP. Damage here means unintended actions on the user's machine or exposure of their screen content, and breakage when the private engine interface changes.\n\nRun `git diff origin/{{base_branch}}...HEAD` to see the changes, then score **risk** from 0 to 100 (higher = more potential damage if something is wrong). Dimensions, roughly by weight:\n1. Approval and authorization: per-app approval, the approval option modes (auto, prompt, deny-unknown), stop_app and turn handling, takeover handling.\n2. Input and focus side effects: cursor movement, frontmost-app changes, focus restore, input landing in the wrong app or tab.\n3. Browser/CDP: tab ownership, acting on or closing user tabs, background-tab input, connection lifecycle.\n4. Opt-in powerful features: run_cua_js, reset_repl, Computer History, or anything that changes defaults to on.\n5. Data exposure: screenshots, accessibility trees, history, logs, and state written to disk or returned in tool output; unbounded output.\n6. Private-interface coupling: engine protocol, MCP tool schema, ChatGPT app paths, Node/macOS assumptions, install/update and release scripts.\n\nBands: 0-20 = docs, tests, CHANGELOG, or isolated refactors with no behavior change; 21-45 = small behavior changes in observation, formatting, or error messages; 46-70 = changes to tool schemas, browser tab handling, input actions, or config options; 71-100 = changes that weaken or bypass approval, alter defaults of opt-in features, enable arbitrary code execution, broaden data capture, or can drive input into unintended apps.\n\nOutput ONLY this JSON object as the very last line of your response:\n\n{\"value\": <number 0-100>, \"rationale\": \"<1-2 sentence explanation>\"}"
+  },
+  "select": {
+    "trigger_types": [
+      "api",
+      "push"
+    ]
+  },
+  "output": {
+    "adapter": "last_json_line",
+    "result_type": "trail_monitor",
+    "trail_monitor": {
+      "key": "risk",
+      "label": "Risk",
+      "value_type": "percent",
+      "polarity": "lower_is_better"
+    }
+  }
+}
