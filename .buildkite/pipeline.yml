@@ -1,0 +1,14 @@
+# Buildkite CI (replaces .github/workflows now that this repo lives on Entire).
+# Runs on the free hosted linux-small queue; checkout comes from the Entire plugin Buildkite adds to every job.
+steps:
+  - label: ":bun: check"
+    key: check
+    agents: { queue: linux-small }
+    timeout_in_minutes: 20
+    plugins:
+      - docker#v5.12.0:
+          image: node:22
+    command: |
+      npm i -g --silent bun
+      node --version && bun --version
+      bun run check
