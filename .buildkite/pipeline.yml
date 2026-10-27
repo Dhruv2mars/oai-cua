@@ -8,8 +8,9 @@ steps:
     plugins:
       - docker#v5.12.0:
           image: node:22
+          environment: [OAI_CUA_PYTHON=/usr/bin/python3]
     command: |
-      apt-get update -qq && apt-get install -y -qq python3 >/dev/null
+      apt-get update -qq && apt-get install -y -qq python3 lsof >/dev/null
       npm i -g --silent bun
       node --version && bun --version
       bun run check
