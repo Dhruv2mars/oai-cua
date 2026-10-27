@@ -9,6 +9,7 @@ steps:
       - docker#v5.12.0:
           image: node:22
     command: |
+      apt-get update -qq && apt-get install -y -qq python3 >/dev/null
       npm i -g --silent bun
       node --version && bun --version
       bun run check
