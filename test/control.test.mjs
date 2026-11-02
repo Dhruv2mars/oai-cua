@@ -217,12 +217,18 @@ describe("stop, takeover and turns", () => {
     expect((await other.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
   });
 
-  test("a stop sent without its turn would outlive every engine (why stop_app sends the turn)", async () => {
-    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
-    await s.init();
-    await s.call("run_cua_js", { code: `await nodeRepl.rpc("cuabridge", { type: "stopApp", app: "TextEdit" })` });
-    await s.call("stop_app", { app: "Notes" }); // ends the turn at the service and replaces the engine
-    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use");
+  test("an app session another session started ends with that session's turn, so a later stop_app clears", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "200" });
+    const a = startShim(sb);
+    await a.init();
+    await a.call("get_app_state", { app: "TextEdit" }); // starts TextEdit's session in A's turn
+    await sleep(500); // A goes quiet: its turn ends, at the service too
+    const b = startShim(sb);
+    await b.init();
+    await b.call("get_app_state", { app: "TextEdit" });
+    await b.call("stop_app", { app: "TextEdit" });
+    expect((await b.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+    expect((await a.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
   });
 
   test("a user stop is honoured for the rest of the turn and cleared when it ends; nothing is retried", async () => {
@@ -289,7 +295,29 @@ export const client = {
     }
   });
 
-  test("a session that ends inside a stopped turn ends that turn at the service", async () => {
+  test("after a turn ends at the service, work on the same app goes on in a new app session", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "200" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await sleep(500); // this turn, and with it TextEdit's session, ends at the service
+    expect((await s.call("press_key", { app: "TextEdit", key: "a" })).isError).toBeUndefined();
+  });
+
+  test("an action whose app session another client's turn ended is run again in a new session, once", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "300" });
+    const a = startShim(sb);
+    await a.init();
+    await a.call("get_app_state", { app: "TextEdit" }); // A's turn starts TextEdit's session
+    const b = startShim({ ...sb, env: { ...sb.env, OAI_CUA_TURN_IDLE_MS: "0" } }); // B's turn stays open
+    await b.init();
+    await b.call("get_app_state", { app: "TextEdit" }); // B works in that same session
+    await sleep(600); // A's turn ends; so does the session B's handle belongs to
+    for (const r of [await b.call("press_key", { app: "TextEdit", key: "a" }), await b.call("batch", { app: "TextEdit", steps: [{ tool: "click", args: { element_index: 1 } }] })])
+      expect(r.isError).toBeUndefined();
+    expect(sb.events().filter((e) => e.ev === "action").map((e) => e.method)).toEqual(["pressKey", "click"]); // each ran once
+  });
+
+  test("a session that exits ends its turn at the service, stopped or not", async () => {
     const sb = sandbox({ FAKE_USER_STOP: "TextEdit" }), s = startShim(sb);
     await s.init();
     expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).toContain("The user stopped Computer Use");
@@ -309,7 +337,8 @@ export const client = {
     await sleep(500);
     const t1 = turnMetaOf(sb, 1);
     expect(sb.events().filter((e) => e.ev === "turn_ended").map((e) => e.args)).toEqual([{ hook_event_name: "Stop", session_id: t1.thread_id, turn_id: t1.turn_id }]);
-    expect(sb.events().filter((e) => e.ev === "rpc").length).toBe(0); // no service TurnEnded
+    // ended at the service too, as Codex does every turn: the service keeps the turn's app sessions until then
+    expect(sb.events().filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "turnEnded", threadID: t1.thread_id, turnID: t1.turn_id, meta: t1 }]);
     await s.call("get_app_state", { app: "TextEdit" });
     expect(toolTurns(sb)).toEqual(["1", "2"]);
   });

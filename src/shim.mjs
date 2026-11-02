@@ -28,48 +28,51 @@ const log = logger("shim.log");
 const approver = new Approver({ log }); // per-app approval (approval.mjs)
 const focus = new FocusGuard({ log });  // undoes focus theft by the target app (focus.mjs)
 
-// Turns. Every cell carries this session's turn (a fresh turn id each time:
-// the service treats an ended turn id as ended for every client). MCP has no
-// turn boundary, so a turn ends when Claude goes quiet (OAI_CUA_TURN_IDLE_MS,
-// default 60s), when a call is cancelled (the user interrupted Claude), or
-// after stop_app. A stop (the user's, or stop_app's, which is sent with this
-// turn's metadata) belongs to the turn it was made in. The service keeps it,
-// across engines and sessions, until it hears that this turn ended: so a turn
-// with a stop is ended at the service (TurnEnded) when it ends, and the engine
-// is replaced too, which is what cleared stops before ChatGPT 26.1022. The
-// app works again in the next turn, and nothing is ever retried.
+// Turns. Every cell carries this session's turn, with a fresh turn id each
+// time: the service treats an ended turn id as ended for every client. MCP has
+// no turn boundary, so a turn ends when Claude goes quiet
+// (OAI_CUA_TURN_IDLE_MS, default 60s), when a call is cancelled (the user
+// interrupted Claude), after stop_app, or when the session exits.
+// Since ChatGPT 26.1022 the service keeps an app's session, and any stop on
+// it (the user's, or stop_app's), until it hears that the turn that started
+// that session ended, across engines and clients. So, as Codex does, every
+// turn that used the engine is ended at the service (TurnEnded) when it ends.
+// A turn with a stop also replaces the engine (what cleared stops before
+// 26.1022), so the app works again in the next turn. Nothing is retried.
 const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
 const turn = { thread: randomUUID(), n: 1, id: randomUUID(), used: false, timer: null, active: 0, stopped: false };
-const stoppedTurns = []; // ended turns with a stop the service still holds (a recording defers clearing it)
+const unended = []; // ended turns the service has not been told about yet (a recording defers it)
 const turnMeta = (t) => ({ session_id: t.thread, thread_id: t.thread, turn_id: t.id });
 async function endTurn(why) {
   clearTimeout(turn.timer);
   if (!turn.used) return;
-  const ended = { thread: turn.thread, id: turn.id, n: turn.n };
+  const ended = { thread: turn.thread, id: turn.id, n: turn.n, stopped: turn.stopped };
   turn.n++;
   turn.id = randomUUID();
   turn.used = false;
-  if (turn.stopped) stoppedTurns.push(ended);
   turn.stopped = false;
-  log(`turn ${ended.n} ends: ${why}`);
-  const releasing = releaseStops(`stops from turn ${ended.n}`); // queued before any new call, and before endTurn looks at the engine
+  unended.push(ended);
+  log(`turn ${ended.n} (${ended.id}) ends: ${why}`);
+  const releasing = releaseTurns(`turn ${ended.n}`); // queued before any new call, and before endTurn looks at the engine
   await Promise.all([releasing, engine.endTurn({ thread: ended.thread, turn: ended.id }).catch((e) => log(`turn end failed: ${e.message}`))]);
 }
-// Tells the service that these turns ended, which clears their stops. Runs on
-// the current engine, or starts one; failures are logged.
+// Tells the service that these turns ended, which ends their app sessions and
+// clears their stops. Runs on the current engine, or starts one; failures are logged.
 function serviceTurnsEnded(turns) {
   if (!turns.length) return Promise.resolve();
   const msgs = turns.map((t) => ({ type: "turnEnded", threadID: t.thread, turnID: t.id, meta: turnMeta(t) }));
-  const cell = `{ for (const m of ${JSON.stringify(msgs)}) await nodeRepl.rpc("cuabridge", m); }`;
+  // The app handles of those sessions are dead now; the next cell gets new ones.
+  const cell = `{ for (const m of ${JSON.stringify(msgs)}) await nodeRepl.rpc("cuabridge", m); globalThis.__cb?.apps.clear(); }`;
   return engine.run(cell, 15000, undefined, { turn: false })
     .then((r) => r.isError && log(`service turn end failed: ${String(r.content[0]?.text ?? "").slice(0, 300)}`))
     .catch((e) => log(`service turn end failed: ${e.message}`));
 }
-async function releaseStops(why) {
-  if (!stoppedTurns.length || engine.recording) return;
-  const turns = stoppedTurns.splice(0);
+async function releaseTurns(why) {
+  if (!unended.length || engine.recording) return; // ending a turn could end the recording's session
+  const turns = unended.splice(0);
+  if (!turns.some((t) => t.stopped)) return serviceTurnsEnded(turns);
   observations.forget();
-  log(`ending turn ${turns.map((t) => t.n).join(", ")} at the service and replacing the engine to clear ${why}`);
+  log(`ending ${why} at the service and replacing the engine to clear its stops`);
   // Both are queued now, in this order, so no new call runs in between.
   await Promise.all([serviceTurnsEnded(turns), engine.recycle("clear stops")]);
 }
@@ -219,9 +222,9 @@ async function execute(name, args, signal) {
       if (name === "start_audio_recording" && !r.isError) {
         const ms = Number(args.max_duration_ms ?? 60000) + 5000;
         engine.keepAliveUntil(Date.now() + ms);
-        setTimeout(() => releaseStops("stops deferred during the recording"), ms + 100).unref?.();
+        setTimeout(() => releaseTurns("turns deferred during the recording"), ms + 100).unref?.();
       }
-      if (name === "stop_audio_recording") { engine.keepAliveUntil(0); await releaseStops("stops deferred during the recording"); }
+      if (name === "stop_audio_recording") { engine.keepAliveUntil(0); await releaseTurns("turns deferred during the recording"); }
       if (inlineAudio && !audioContentOk() && out) out.push({ type: "text", text: `\n(audio content needs MCP protocol 2025-03-26 or later; this client negotiated ${clientProtocol})` });
       if (r.isError || !out) {
         const msg = String((r.isError ? r.content[0]?.text : "no output from engine") ?? "").replaceAll(START, "").slice(0, 1000).trim(); // REPL errors come first
@@ -327,9 +330,9 @@ function serve() {
     log(`shim exit: ${why}`);
     service.stop(why);
     focus.stop();
-    // Stops this session made would otherwise outlive it at the service.
-    if (turn.stopped && turn.used) stoppedTurns.push({ thread: turn.thread, id: turn.id, n: turn.n });
-    await Promise.race([serviceTurnsEnded(stoppedTurns.splice(0)), new Promise((r) => setTimeout(r, 4000))]);
+    // Its app sessions (and stops on them) would otherwise outlive it at the service.
+    if (turn.used) unended.push({ thread: turn.thread, id: turn.id, n: turn.n });
+    await Promise.race([serviceTurnsEnded(unended.splice(0)), new Promise((r) => setTimeout(r, 4000))]);
     await Promise.all([engine.stop(why), browser.close()]);
     process.exit(0);
   };
@@ -362,6 +365,7 @@ async function doctor() {
     return r.content[0].text.replace(/\s+/g, " ");
   }, true); // optional: only Record & Replay needs it
   service.stop("doctor done");
+  await endTurn("doctor done");
   // Informational only: browser_* tools are optional, and connecting would
   // make Helium ask the user to allow remote debugging.
   const eps = discoverEndpoints();

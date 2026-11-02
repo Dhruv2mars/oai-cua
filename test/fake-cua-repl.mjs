@@ -12,12 +12,12 @@
 // FAKE_TAKEOVER (first N actions fail with the service's "user changed" error),
 // FAKE_BY_ID (getApp only accepts bundle ids), FAKE_ERROR (getApp throws it).
 // FAKE_STICKY_STOP: stopApp stops the app the way SkyComputerUseService
-// 26.1022+ does: the stop belongs to the request's turn (x-codex-turn-metadata)
-// and is shared by every fake process for this FAKE_LOG (one service), until
-// a TurnEnded for that turn; a stop without a turn is never cleared. Cells in
-// an ended turn id are refused, whoever sends them.
-// FAKE_USER_STOP: comma-separated apps the user stopped during the first turn
-// that this fake service sees.
+// 26.1022+ does. Every fake process of this FAKE_LOG shares one service: the
+// first turn (x-codex-turn-metadata) that uses an app starts its session; a
+// stop marks that session, and only a TurnEnded for the session's turn ends it
+// (and the stop). Cells in an ended turn id are refused, whoever sends them.
+// FAKE_USER_STOP: comma-separated apps the user stops once a session for them
+// starts.
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -67,26 +67,43 @@ const treeOf = (name) => {
 };
 const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable for fake."); return new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); };
 // Without disableDiffing the real engine answers with its own (shared-baseline) diff.
-const capture = (name, o, kind) => { if (isStopped(name)) throw new Error(STOPPED); record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
+const capture = (name, o, kind) => { touch(name); record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
 let takeovers = Number(E.FAKE_TAKEOVER || 0);
 const STOPPED = "This application session has been explicitly stopped by the user for this turn. Stop your work and send a final message noting they stopped the session and you're ready to continue if they want you to. Computer Use can be used again in the next assistant turn.";
 const ENDED = "Computer Use is unavailable because the current turn ended. It will work again after the next user message.";
-// The service's state, shared by every fake process of this FAKE_LOG: stops (app → turn id or null) and ended turn ids.
+// The service's state, shared by every fake process of this FAKE_LOG: app
+// sessions (app → { owner turn id or null, stopped }) and ended turn ids.
 const SERVICE = `${E.FAKE_LOG}.service.json`;
 const serviceState = (update) => {
-  let st = { stops: {}, ended: [], userStopTurn: undefined };
+  let st = { sessions: {}, ended: [], userStopped: [] };
   try { st = JSON.parse(fs.readFileSync(SERVICE, "utf8")); } catch {}
   if (update) { update(st); fs.writeFileSync(SERVICE, JSON.stringify(st)); }
   return st;
 };
 let cellTurn = null; // turn id of the running cell
-const isStopped = (name) => {
-  const n = String(name).toLowerCase();
-  return Object.prototype.hasOwnProperty.call(serviceState().stops, n) || Object.prototype.hasOwnProperty.call(serviceState().stops, `com.example.${n}`);
+const key = (name) => String(name).toLowerCase().replace(/^com\.example\./, "");
+// Every use goes through the app's session; the first use in a turn starts it.
+const touch = (name) => {
+  if (!E.FAKE_STICKY_STOP && !E.FAKE_USER_STOP) return;
+  const st = serviceState((st) => {
+    const k = key(name);
+    st.sessions[k] ??= { owner: cellTurn, stopped: false, sid: Math.random().toString(36).slice(2) };
+    const users = (E.FAKE_USER_STOP || "").split(",").filter(Boolean).map(key);
+    if (users.includes(k) && !st.userStopped.includes(k)) { st.userStopped.push(k); st.sessions[k].stopped = true; }
+  });
+  if (st.sessions[key(name)].stopped) throw new Error(STOPPED);
+  return st.sessions[key(name)].sid;
 };
-const stopApp = (app, turnId) => serviceState((st) => { for (const k of [app, `com.example.${app}`]) st.stops[k.toLowerCase()] = turnId ?? null; });
-const app = (name) => {
+// A handle from getApp belongs to the session it started in; once that session ends it is refused.
+const NOT_ACTIVE = (name) => `Computer Use is not active for '/Applications/${name}.app'. You first must call \`get_app_state\` to get the latest state before doing other Computer Use actions.`;
+const live = (name, sid) => {
+  if (sid !== undefined && serviceState().sessions[key(name)]?.sid !== sid) throw new Error(NOT_ACTIVE(name));
+  touch(name);
+};
+const stopApp = (app, turnId) => serviceState((st) => { (st.sessions[key(app)] ??= { owner: turnId ?? null, stopped: false }).stopped = true; });
+const app = (name, sid) => {
   const rec = (method) => async (...args) => {
+    live(name, sid);
     record({ ev: "action", app: name, method, args });
     if (args[0] === "FAIL") throw new Error(`fake ${method} failure`);
     if (takeovers > 0) { takeovers--; throw new Error(`The user changed '${name}'. Re-query the latest state with \`get_app_state\` before sending more actions.`); }
@@ -95,9 +112,9 @@ const app = (name) => {
   return {
     click: rec("click"), typeText: rec("typeText"), paste: rec("paste"), pressKey: rec("pressKey"), scroll: rec("scroll"),
     drag: rec("drag"), setValue: rec("setValue"), selectText: rec("selectText"), performSecondaryAction: rec("performSecondaryAction"),
-    async getAXState(o) { return capture(name, o, "tree"); },
+    async getAXState(o) { live(name, sid); return capture(name, o, "tree"); },
     async getScreenshot(o) { record({ ev: "observe", app: name, kind: "shot", emit: o?.emit }); return shot(); },
-    async getAXStateAndScreenshot(o) { const state = capture(name, o, "tree+shot"); return E.FAKE_NO_SHOT ? { state } : { state, screenshot: shot() }; },
+    async getAXStateAndScreenshot(o) { live(name, sid); const state = capture(name, o, "tree+shot"); return E.FAKE_NO_SHOT ? { state } : { state, screenshot: shot() }; },
   };
 };
 globalThis.nodeRepl = {
@@ -109,7 +126,7 @@ globalThis.nodeRepl = {
     if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
     if (msg.type === "turnEnded") { // ComputerUseIPCCodexTurnEndedRequest { threadID, turnID }
       if (typeof msg.threadID !== "string" || typeof msg.turnID !== "string") throw new Error("Invalid params");
-      serviceState((st) => { st.ended.push(msg.turnID); for (const [k, t] of Object.entries(st.stops)) if (t === msg.turnID) delete st.stops[k]; });
+      serviceState((st) => { st.ended.push(msg.turnID); for (const [k, v] of Object.entries(st.sessions)) if (v.owner === msg.turnID) delete st.sessions[k]; });
       return {};
     }
     throw new Error(`unsupported cuabridge request: ${msg.type}`);
@@ -150,11 +167,11 @@ const makeCua = () => ({
   async getApp(name) {
     record({ ev: "getApp", name });
     if (E.FAKE_ERROR) throw new Error(E.FAKE_ERROR);
-    if (isStopped(name)) throw new Error(STOPPED);
+    const sid = touch(name);
     if (E.FAKE_BY_ID && !/^[a-z]+\.[a-z]+\./.test(name)) throw new Error("Computer Use server error -10010: Invalid app");
     await computer.get_app_state({ app: name, disableDiff: true });
     nodeRepl.write(`auto-emitted state for ${name}`); // real getApp emits state too
-    return app(name);
+    return app(name, sid);
   },
 });
 globalThis.cua = makeCua();
@@ -180,8 +197,6 @@ async function handle(m) {
     record({ ev: "cell", timeout_ms, code: code.slice(0, 120), turn: turnMeta });
     cellTurn = turnMeta?.turn_id ?? null;
     nodeRepl.requestMeta = turnMeta ? { "x-codex-turn-metadata": turnMeta } : {};
-    if (E.FAKE_USER_STOP && cellTurn && code.includes("__cb") && serviceState().userStopTurn === undefined) // the user stops these apps during the first turn
-      serviceState((st) => { st.userStopTurn = cellTurn; for (const a of E.FAKE_USER_STOP.split(",").filter(Boolean)) for (const k of [a, `com.example.${a}`]) st.stops[k.toLowerCase()] = cellTurn; });
     if (cellTurn && code.includes("__cb") && serviceState().ended.includes(cellTurn))
       return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: ENDED }], isError: true } });
     if (E.FAKE_CRASH_ONCE && code.includes("__cb") && !fs.existsSync(E.FAKE_CRASH_ONCE)) { fs.writeFileSync(E.FAKE_CRASH_ONCE, ""); process.exit(3); }

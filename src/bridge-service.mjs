@@ -27,8 +27,9 @@ const text = (v, name) => {
 // TurnEnded is safe because every turn id is fresh: the service refuses
 // requests in an ended turn id, from any client, and only those.
 const ALLOWED = new Set(["resolve", "stopApp", "turnEnded"]);
-// The Codex turn a request belongs to (x-codex-turn-metadata). A stop is kept
-// until that turn ends; a stop without one is kept until the service restarts.
+// The Codex turn a request belongs to (x-codex-turn-metadata), as Codex sends
+// it with every request. The service keeps an app's session, and a stop on it,
+// until the turn that started the session ends (TurnEnded below).
 const meta = (m) => (m && typeof m === "object" && !Array.isArray(m) ? { codexMetadata: m } : {});
 
 export async function handleRpc(msg) {
@@ -47,7 +48,7 @@ export async function handleRpc(msg) {
       const r = await c.request("ComputerUseIPCAppStopRequest", { app: appPath }, { timeoutSeconds: 10, ...meta(msg.meta) });
       return { bundleIdentifier: p.target.bundleIdentifier, displayName: p.target.displayName, active: r?.active ?? null };
     }
-    case "turnEnded": { // clears the stops made in this turn (what Codex's turn-ended notify does)
+    case "turnEnded": { // ends this turn's app sessions and their stops (what Codex's turn-ended notify does)
       await c.request("ComputerUseIPCCodexTurnEndedRequest", { threadID: text(msg.threadID, "threadID"), turnID: text(msg.turnID, "turnID") }, { timeoutSeconds: 10, ...meta(msg.meta) });
       return {};
     }

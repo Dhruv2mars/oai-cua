@@ -202,6 +202,13 @@ globalThis.__cb ??= {
     }
     return a;
   },
+  // Runs fn with the app's handle. If the service has ended the app session the
+  // handle belongs to (its turn ended, this client's or another's), it refused
+  // the request, so nothing ran: start a new session and run fn once more.
+  async use(name, fn) {
+    try { return await fn(await this.app(name)); }
+    catch (e) { if (!/Computer Use is not active for/i.test(String(e?.message ?? e))) throw e; return await fn(await this.app(name, true)); }
+  },
   async lookup(name) {
     const norm = (s) => String(s ?? "").toLowerCase().trim().replace(/\\.app$/, "").replace(/\\s*\\([^)]*\\)$/, "").replace(/\\s+/g, "");
     const apps = await cua.listApps({ emit: false });
@@ -265,8 +272,7 @@ if (A.include_audio) {
   const after = `const after = async (app) => {
   let tree = null, shot = null, error = null;
   try {
-    const a = await __cb.app(app);
-    if (A.screenshot) ({ tree, shot } = ${treeShot("a")}); else tree = ${tree("a")};
+    ({ tree, shot = null } = await __cb.use(app, async (a) => A.screenshot ? ${treeShot("a")} : { tree: ${tree("a")} }));
   } catch (e) { error = String(e?.message ?? e); }
   return { app, tree, shot, error };
 };
@@ -282,11 +288,12 @@ const touched = [];
 for (let i = 0; i < STEPS.length; i++) {
   const { tool, args: A } = STEPS[i];
   try {
-    const a = await __cb.app(A.app);
-    if (!touched.includes(A.app)) touched.push(A.app);
-    switch (tool) {
-${[...new Set(opts.steps.map((s) => s.tool))].map((t) => `      case ${JSON.stringify(t)}: { ${ACTIONS[t]} break; }`).join("\n")}
-    }
+    await __cb.use(A.app, async (a) => {
+      if (!touched.includes(A.app)) touched.push(A.app);
+      switch (tool) {
+${[...new Set(opts.steps.map((s) => s.tool))].map((t) => `        case ${JSON.stringify(t)}: { ${ACTIONS[t]} break; }`).join("\n")}
+      }
+    });
     ran++;
   } catch (e) { fail = { step: i + 1, tool, error: String(e?.message ?? e) }; break; }
 }
@@ -315,9 +322,9 @@ nodeRepl.write(${M} + (lines.join("\\n") || "No app sessions to stop."));
 }`;
   // If the user changed the app under the action: keyboard actions refresh the
   // state and retry once; others report it (fail) along with the fresh state.
-  return head + `const a = await __cb.app(A.app);
+  return head + `let a = await __cb.app(A.app);
 let ran = 0, fail = null, note = null;
-const act = async () => { ${ACTIONS[name]} };
+const act = () => __cb.use(A.app, async (x) => { a = x; ${ACTIONS[name]} });
 try { await act(); ran = 1; }
 catch (e) {
   const msg = String(e?.message ?? e);

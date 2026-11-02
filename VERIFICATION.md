@@ -21,17 +21,21 @@ element.
 
 | Finding | Evidence | Fix | Proof |
 | --- | --- | --- | --- |
-| `stop_app` blocked the app for every client, ChatGPT included, until the service restarts | After `stop_app TextEdit` the next `get_app_state` failed ("explicitly stopped by the user for this turn"), and so did a new shim process 60 s later. Raw IPC probes: a stop is keyed to the stop request's `codexTurnMetadata`; `ComputerUseIPCCodexTurnEndedRequest {threadID, turnID}` for that turn clears it; a stop without metadata survived every TurnEnded, engine restarts and an app relaunch | `stop_app` sends `nodeRepl.requestMeta["x-codex-turn-metadata"]`; the trusted service gained `turnEnded`; a turn with a stop is ended at the service when it ends (and on exit), then the engine is replaced as before | Live: `stop_app Dictionary` → same session `get_app_state` OK (925 ms) → a second session OK. Tests: 5 new/changed, each fails with the fix removed |
-| Ended turn ids are refused for every client | After TurnEnded for turn "u1", a request from another thread with turn "u1" got "the current turn ended"; thread V turn "v1" was fine | Turn ids are fresh UUIDs | Test "a stop that the service keeps is gone … every other one" fails with numeric ids |
-| First-use docs lost OpenAI's core API before the engine starts | `oai-cua://engine/first-use` returned 5,567 chars, only the confirmations policy: `tinysky-alt-core-cua-repl.md` became `…-core-cua-repl-{mac,linux,windows,no-cua}.md` on 2026-10-28 | Read the `-mac` file (old name as fallback); list no `-linux`/`-windows` docs | Live: 19,915 chars with the API; doctor 27 docs (was 31 with the other platforms). Test fixture uses the new layout |
+| `stop_app` blocked the app for every client, ChatGPT included, until the service restarts | After `stop_app TextEdit` the next `get_app_state` failed ("explicitly stopped by the user for this turn"), and so did a new shim process 60 s later. Raw IPC probes (trusted `node_repl` service): the first turn (`codexTurnMetadata`) that uses an app starts its session; a stop, from any client, marks that session; only `ComputerUseIPCCodexTurnEndedRequest {threadID, turnID}` for the owning turn ends it. Session A (turn a1) and B (b1) on Digital Color Meter: B stops, TurnEnded(b1) → still stopped; TurnEnded(a1) → cleared. Engine restarts and an app relaunch never clear it. The shim never sent TurnEnded, so every session it started stayed open | Every used turn is ended at the service through the trusted service's new `turnEnded` (and on exit); a turn with a stop also replaces the engine as before; `stop_app` sends the cell's turn metadata like Codex requests do | Live: session A uses ColorSync Utility and goes quiet; session B uses it, `stop_app` → B and A both OK, and a third session after both exit OK |
+| Ended turn ids are refused for every client | After TurnEnded for turn "u1", a request from another thread with turn "u1" got "the current turn ended"; thread V turn "v1" was fine | Turn ids are fresh UUIDs | Tests fail with numeric ids |
+| After a turn ends, cached app handles are dead | `press_key` after an idle turn end: "Computer Use is not active for '…ColorSync Utility.app'. You first must call `get_app_state`…" | The turn-end cell drops the handle cache; an action refused with that error gets a new handle and runs once more (the service ran nothing) | Live: same session after its turn ended, and B after A's turn ended the session B was using: press_key, click, scroll, drag, batch all OK |
+| First-use docs lost OpenAI's core API before the engine starts | `oai-cua://engine/first-use` returned 5,567 chars, only the confirmations policy: `tinysky-alt-core-cua-repl.md` became `…-core-cua-repl-{mac,linux,windows,no-cua}.md` on 2026-10-28 | Read the `-mac` file (old name as fallback); list no `-linux`/`-windows` docs | Live: 19,915 chars with the API; doctor 27 docs (was 31 with the other platforms) |
+
+Every fix has a fake-engine test that fails when the fix is removed (8
+mutations checked). The fake now models the service's shared app sessions.
 
 **Not reproducible here:** the menu-bar stop itself (no safe way to trigger it
-in a test). The fix ends the turn in which the shim saw a user stop, which
-matches the service's per-turn keying measured above.
+in a test). It marks the same app session, which the owning turn's end clears.
 
-**Left behind by this audit:** before the fix, `stop_app` and the raw probes
-left TextEdit, Calculator, Chess and Grapher stopped with no turn. Only a
-restart of `SkyComputerUseService` clears that.
+**Left behind by this audit:** before the fix, runs left TextEdit, Calculator
+and Dictionary in sessions owned by turns whose ids were never logged, so they
+stay stopped until `SkyComputerUseService` restarts. Turn ids are now logged in
+`shim.log`.
 
 # Verification — v0.2 (2026-10-19)
 

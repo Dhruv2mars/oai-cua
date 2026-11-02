@@ -334,22 +334,23 @@ of these happens:
 - A call is cancelled, for example because you interrupted Claude.
 - `stop_app` runs.
 
-At turn end the shim calls cua-repl's `turn_ended` lifecycle tool, as
-Codex's Stop hook does. Every turn gets a fresh turn id: the service treats an
-ended turn id as ended for every client ("the current turn ended"), so ids
-must never repeat across sessions.
+At turn end the shim does what Codex does: it calls cua-repl's `turn_ended`
+lifecycle tool, and it tells `SkyComputerUseService` that the turn ended.
+Since ChatGPT 26.1022 the service keeps an app's session, and any stop on it,
+until the turn that started that session ends, whichever client stops it and
+across engines. A turn the service never hears about leaves its app sessions
+open; a later stop then sticks until the service restarts. Every turn gets a
+fresh turn id, because the service refuses an ended turn id for every client.
 
-A stop (yours from the menu bar, or `stop_app`'s) belongs to the turn it was
-made in, and since ChatGPT 26.1022 the service keeps it across engines and
-sessions until it hears that this turn ended. `stop_app` sends its turn with
-the stop, and when a turn with a stop ends, the shim sends the service's
-turn-ended request for it and replaces the engine (which is what cleared stops
-in older ChatGPT versions). So `stop_app` releases the app at once; a stop of
-yours is honoured for the rest of the turn, and the app works again in the
-next turn, for this session and every other one. A session that exits during
-a stopped turn ends that turn first. Nothing is retried. While an audio
-recording is running the engine is kept, and clearing waits for the next turn
-end after it.
+A stop (yours from the menu bar, or `stop_app`'s) is honoured for the rest of
+the turn. When a turn with a stop ends, the engine is also replaced (what
+cleared stops in older ChatGPT versions), so the app works again in the next
+turn, for this session and every other one. A session that exits ends its
+current turn first. After a turn ends, the next action on an app starts a new
+app session; an action refused because another client ended the session it
+was using is run once more in a new session (the service ran nothing).
+Nothing else is retried. While an audio recording is running, the engine is
+kept and turn ends wait until it stops.
 
 Stopping and resolving apps go through a small trusted `node_repl` service of
 the shim's own (`src/bridge-service.mjs`). It loads OpenAI's IPC client from
@@ -409,15 +410,14 @@ rest are for development:
   gate. Use `prompt` or `deny-unknown` for a per-app gate in headless use.
 - `stop_app` and a stop from ChatGPT's menu bar are service-wide. They also end
   that app's sessions for other clients using it at the same moment.
-- A stop made by *another* client lasts until that client's turn ends.
-  Nothing this shim does clears it.
+- A stop on an app session another client started lasts until that
+  client's turn ends. Nothing this shim does clears it.
 - A stop of yours ends with its turn, and `stop_app` (on any app) or 60 s of
   quiet ends the turn. So if Claude calls `stop_app` right after being told
   you stopped an app, your app is usable again at once.
-- A `stopApp` sent from a `run_cua_js` script without the cell's turn
-  (`meta: nodeRepl.requestMeta["x-codex-turn-metadata"]`) is never cleared:
-  that app stays stopped for every client, ChatGPT included, until
-  `SkyComputerUseService` restarts. Use the `stop_app` tool instead.
+- A `stopApp` sent from a `run_cua_js` script is not followed by an engine
+  replacement; the app stays stopped until the turn that started its session
+  ends. Use the `stop_app` tool instead.
 - `run_cua_js` scripts can call the bridge's trusted service too. It only
   offers resolve, stop-app and turn-ended; none of them can answer an approval.
 
