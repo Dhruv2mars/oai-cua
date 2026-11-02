@@ -22,8 +22,16 @@ describe("plugin", () => {
     expect(changelogSection("## 1.0.10\nA", "1.0.1")).toBe(null);
   });
 
-  test("the repo is its own marketplace with one entry at ./", () => {
-    expect(market.plugins).toEqual([expect.objectContaining({ name: plugin.name, source: "./" })]);
+  test("the marketplace installs the plugin from this npm package", () => {
+    expect(market.name).toBe(plugin.name);
+    expect(market.plugins).toEqual([expect.objectContaining({ name: plugin.name, source: { source: "npm", package: pkg.name } })]);
+    expect(pkg.private).toBeUndefined();
+    expect(pkg.publishConfig).toEqual({ access: "public" });
+  });
+
+  test("the npm package ships the plugin, the marketplace file and the shim's runtime files", () => {
+    for (const f of [".claude-plugin", ".mcp.json", "src"]) expect(pkg.files).toContain(f);
+    for (const f of fs.readdirSync(path.join(ROOT, "src"))) expect(fs.statSync(path.join(ROOT, "src", f)).isFile()).toBe(true);
   });
 
   test("one MCP server, the shim, with state in the plugin data dir", () => {

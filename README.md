@@ -15,9 +15,14 @@ inside the ChatGPT app, so a ChatGPT update can break it until a fix ships
 ## Install
 
 ```
-/plugin marketplace add Dhruv2mars/oai-cua
+/plugin marketplace add https://unpkg.com/@dhruv2mars/oai-cua/.claude-plugin/marketplace.json
 /plugin install oai-cua@oai-cua
 ```
+
+The plugin is published on npm as [`@dhruv2mars/oai-cua`](https://www.npmjs.com/package/@dhruv2mars/oai-cua);
+the marketplace file comes from the newest release on unpkg, and Claude Code
+fetches the plugin itself from npm. The source lives on
+[Entire](https://entire.com/et/dhruv2mars/oai-cua).
 
 The plugin does one thing: it adds the computer-use MCP server. Its tools
 appear as `mcp__plugin_oai-cua_computer-use__<tool>`. It ships no agents,
@@ -39,10 +44,17 @@ hooks, skills or settings, and it doesn't change your settings.
 - `approval` (`auto`): app-access approval when Claude Code can't ask you
   itself; `prompt` or `deny-unknown` instead (see below).
 
-**Update:** `claude plugin update oai-cua@oai-cua`, then `/reload-plugins` or
-restart. New releases arrive when the version changes. **Uninstall:**
+**Update:** `claude plugin marketplace update oai-cua`, then
+`claude plugin update oai-cua@oai-cua`, then `/reload-plugins` or restart.
+New releases arrive when the version changes. Auto-update is off for
+third-party marketplaces; turn it on under `/plugin` → Marketplaces. **Uninstall:**
 `claude plugin uninstall oai-cua@oai-cua`. This also deletes the plugin's data
 directory (logs, screenshots, state) unless you pass `--keep-data`.
+
+**Installed from GitHub before 1.0.1:** the GitHub repository is gone, so that
+marketplace can't update. Run `claude plugin marketplace remove oai-cua`
+(this uninstalls the plugin and deletes its options and data), then the two
+install commands above.
 
 **Moving from the old `install.mjs` registration:** run
 `claude mcp remove -s user openai-computer-use` (or `oai-cua`, if you ran the
@@ -364,13 +376,13 @@ bun run doctor          # live: runtime discovery + engine + list_apps timing
 claude --plugin-dir .   # load this checkout as the plugin
 ```
 
-Bun runs the tests; the shim itself runs on Node with no dependencies. CI runs
-`bun run check` on macOS with Node 22. To release: `bun run release bump
-<version>` sets the version in `package.json` and `.claude-plugin/plugin.json`
-(installed plugins only update when it changes); add its section to
-`CHANGELOG.md` and merge that. Then, on an up-to-date `main`, `bun run release
-publish` runs the checks, tags `v<version>` and creates the GitHub release from
-the changelog.
+Bun runs the tests; the shim itself runs on Node with no dependencies. CI
+(Buildkite) runs `bun run check` on Linux with Node 22. To release: `bun run
+release bump <version>` sets the version in `package.json` and
+`.claude-plugin/plugin.json` (installed plugins only update when it changes);
+add its section to `CHANGELOG.md` and merge that. Then, on an up-to-date
+`main`, logged in to npm, `bun run release publish` runs the checks, tags
+`v<version>`, pushes the tag and publishes the npm package.
 
 Environment overrides. The plugin sets the state dir and its three options; the
 rest are for development:

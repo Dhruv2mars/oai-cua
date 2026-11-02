@@ -2,8 +2,8 @@
 // Release steps. The version lives in package.json and .claude-plugin/plugin.json;
 // installed plugins update only when it changes.
 //   node scripts/release.mjs bump <version>   set both versions (then open a PR)
-//   node scripts/release.mjs publish          on an up-to-date main: tag v<version>
-//                                             and create the GitHub release from CHANGELOG.md
+//   node scripts/release.mjs publish          on an up-to-date main, logged in to npm:
+//                                             tag v<version>, push it, and npm publish
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -43,11 +43,12 @@ function publish() {
   if (sh("git", ["rev-parse", "HEAD"]) !== sh("git", ["rev-parse", "origin/main"])) die("main is not the same as origin/main");
   const tag = `v${version}`;
   if (sh("git", ["tag", "--list", tag])) die(`${tag} already exists`);
+  try { sh("npm", ["whoami"]); } catch { die("not logged in to npm (run npm login)"); }
   sh("bun", ["run", "check"], { stdio: "inherit" });
-  sh("git", ["tag", "-a", tag, "-m", tag]);
+  sh("git", ["tag", "-a", tag, "-m", `${tag}\n\n${notes}`]);
   sh("git", ["push", "origin", tag]);
-  sh("gh", ["release", "create", tag, "--title", tag, "--notes", notes, "--verify-tag"]);
-  console.log(`Released ${tag}.`);
+  sh("npm", ["publish"], { stdio: "inherit" }); // public, per publishConfig; npm may ask for a one-time code
+  console.log(`Released ${tag}: npm ${JSON.parse(read("package.json")).name}@${version}.`);
 }
 
 if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? "")) {
