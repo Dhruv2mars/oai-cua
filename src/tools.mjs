@@ -300,7 +300,8 @@ const lines = [];
 for (const t of targets) {
   let r;
   try {
-    const stop = (app) => nodeRepl.rpc("cuabridge", { type: "stopApp", app });
+    // With this turn's metadata, so the stop ends with the turn (see bridge-service.mjs).
+    const stop = (app) => nodeRepl.rpc("cuabridge", { type: "stopApp", app, meta: nodeRepl.requestMeta?.["x-codex-turn-metadata"] ?? null });
     try { r = await stop(__cb.ids?.get(t) ?? t); }
     catch (e) { const id = /invalid app|not found|ambiguous/i.test(e.message) ? await __cb.lookup(t) : null; if (!id) throw e; r = await stop(id); }
     lines.push("Stopped " + (r.displayName ?? t) + (r.bundleIdentifier ? " (" + r.bundleIdentifier + ")" : "") + ".");

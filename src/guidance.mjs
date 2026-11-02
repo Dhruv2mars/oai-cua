@@ -80,7 +80,7 @@ function walk(dir, depth = 4) {
 
 // macOS only: drop Linux/Windows-specific files.
 function isOtherPlatform(rel, file) {
-  if (/(^|\/)(linux|windows)(\/|$)/.test(rel)) return true;
+  if (/(^|\/)(linux|windows)(\/|$)/.test(rel) || /-(linux|windows)\.md$/.test(rel)) return true; // dirs, or …-core-cua-repl-linux.md (26.1023+)
   try {
     const t = fs.readFileSync(file, "utf8");
     return /^\s*target: "(linux|windows)";\s*$/m.test(t); // sky API surface declarations
@@ -210,7 +210,8 @@ export class FirstUse {
   text() {
     if (this.latest) return this.latest;
     const read = (n) => { const r = this.docs.get(`${SCHEME}cua/docs/tinysky-alt-${n}.md`); try { return r ? readResource(r) : ""; } catch { return ""; } };
-    const t = [read("core-cua-repl"), read("confirmations")].filter(Boolean).join("\n");
+    // The core API doc is per platform since ChatGPT 26.1023 (…-core-cua-repl-mac.md).
+    const t = [read("core-cua-repl-mac") || read("core-cua-repl"), read("confirmations")].filter(Boolean).join("\n");
     if (!t) throw new Error("OpenAI first-use documentation not found in the installed app");
     return t;
   }

@@ -54,7 +54,8 @@ function fakeInstall(sb) {
   const nm = "ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai";
   const filler = (n) => Array.from({ length: n }, (_, i) => `## Filler ${i}\n${"policy prose ".repeat(40)}`).join("\n\n");
   put(`${nm}/cua/docs/tinysky-alt-confirmations.md`, `# Policy\n\n## Scope\nSCOPE-RULE\n\n## Always Confirm\nALWAYS-CONFIRM-RULE\n\n## Hand-off\nHAND-OFF-RULE\n\n${filler(12)}`);
-  put(`${nm}/cua/docs/tinysky-alt-core-cua-repl.md`, "# Core\nCORE-DOC uses js and node_repl");
+  put(`${nm}/cua/docs/tinysky-alt-core-cua-repl-mac.md`, "# Core\nCORE-DOC uses js and node_repl"); // per platform since ChatGPT 26.1023
+  put(`${nm}/cua/docs/tinysky-alt-core-cua-repl-linux.md`, "# Core\nLINUX-CORE-DOC");
   put(`${nm}/sky/docs/sky-window-api.md`, "SKY-WINDOW");
   put(`${nm}/sky/docs/skills/linux/x.md`, "LINUX-ONLY");
   put(`${nm}/sky/docs/skills/win.md`, 'target: "windows";\nWINDOWS-ONLY');
@@ -288,6 +289,7 @@ describe("guidance", () => {
     expect(await read("oai-cua://plugins/computer-use/skills/computer-use/SKILL.md")).toBe("CODEX-SKILL"); // newest version wins
     expect(await read("oai-cua://bridge/guide")).toContain("get_app_state ← ");
     expect(await read("oai-cua://engine/first-use")).toContain("CORE-DOC"); // before the engine ran: same files it reads
+    expect(await read("oai-cua://engine/first-use")).not.toContain("LINUX-CORE-DOC");
     expect((await s.rpc("resources/read", { uri: "oai-cua://nope" })).error.code).toBe(-32002);
     const prompts = (await s.rpc("prompts/list", {})).result.prompts.map((p) => p.name);
     expect(prompts).toEqual(["computer-use", "confirmation-policy"]);

@@ -11,11 +11,13 @@
 // FAKE_TREE_FILE (JSON {app: tree} read on every capture), FAKE_NO_SHOT.
 // FAKE_TAKEOVER (first N actions fail with the service's "user changed" error),
 // FAKE_BY_ID (getApp only accepts bundle ids), FAKE_ERROR (getApp throws it).
-// FAKE_STICKY_STOP: a stopped app stays stopped until this process exits, as
-// with SkyComputerUseService (only its TurnEnded, which the bridge never
-// sends, would clear it sooner);
-// FAKE_USER_STOP: comma-separated apps the user stopped; only the first fake
-// process started for this FAKE_LOG sees them (a new engine is clean).
+// FAKE_STICKY_STOP: stopApp stops the app the way SkyComputerUseService
+// 26.1022+ does: the stop belongs to the request's turn (x-codex-turn-metadata)
+// and is shared by every fake process for this FAKE_LOG (one service), until
+// a TurnEnded for that turn; a stop without a turn is never cleared. Cells in
+// an ended turn id are refused, whoever sends them.
+// FAKE_USER_STOP: comma-separated apps the user stopped during the first turn
+// that this fake service sees.
 // Actions whose first argument is "FAIL" throw. js_reset drops globals.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -68,9 +70,21 @@ const shot = () => { if (E.FAKE_NO_SHOT) throw new Error("Screenshot unavailable
 const capture = (name, o, kind) => { if (isStopped(name)) throw new Error(STOPPED); record({ ev: "observe", app: name, kind, disableDiffing: !!o?.disableDiffing, emit: o?.emit }); return o?.disableDiffing ? treeOf(name) : "ENGINE DIFF (must not be used)"; };
 let takeovers = Number(E.FAKE_TAKEOVER || 0);
 const STOPPED = "This application session has been explicitly stopped by the user for this turn. Stop your work and send a final message noting they stopped the session and you're ready to continue if they want you to. Computer Use can be used again in the next assistant turn.";
-const firstProcess = (() => { try { fs.writeFileSync(`${E.FAKE_LOG}.started`, "", { flag: "wx" }); return true; } catch { return false; } })();
-const stopped = new Set(firstProcess ? (E.FAKE_USER_STOP || "").split(",").filter(Boolean).map((s) => s.toLowerCase()) : []);
-const isStopped = (name) => stopped.has(String(name).toLowerCase());
+const ENDED = "Computer Use is unavailable because the current turn ended. It will work again after the next user message.";
+// The service's state, shared by every fake process of this FAKE_LOG: stops (app → turn id or null) and ended turn ids.
+const SERVICE = `${E.FAKE_LOG}.service.json`;
+const serviceState = (update) => {
+  let st = { stops: {}, ended: [], userStopTurn: undefined };
+  try { st = JSON.parse(fs.readFileSync(SERVICE, "utf8")); } catch {}
+  if (update) { update(st); fs.writeFileSync(SERVICE, JSON.stringify(st)); }
+  return st;
+};
+let cellTurn = null; // turn id of the running cell
+const isStopped = (name) => {
+  const n = String(name).toLowerCase();
+  return Object.prototype.hasOwnProperty.call(serviceState().stops, n) || Object.prototype.hasOwnProperty.call(serviceState().stops, `com.example.${n}`);
+};
+const stopApp = (app, turnId) => serviceState((st) => { for (const k of [app, `com.example.${app}`]) st.stops[k.toLowerCase()] = turnId ?? null; });
 const app = (name) => {
   const rec = (method) => async (...args) => {
     record({ ev: "action", app: name, method, args });
@@ -91,8 +105,13 @@ globalThis.nodeRepl = {
   emitImage: async (img) => out.push({ type: "image", mimeType: "image/jpeg", data: Buffer.from(img).toString("base64") }),
   async rpc(service, msg) { // the bridge's trusted service
     record({ ev: "rpc", service, msg });
-    if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopped.add(msg.app.toLowerCase()).add(`com.example.${msg.app}`.toLowerCase());
+    if (msg.type === "stopApp" && E.FAKE_STICKY_STOP) stopApp(msg.app, msg.meta?.turn_id);
     if (msg.type === "stopApp") return { bundleIdentifier: `com.example.${msg.app}`, displayName: msg.app, active: false };
+    if (msg.type === "turnEnded") { // ComputerUseIPCCodexTurnEndedRequest { threadID, turnID }
+      if (typeof msg.threadID !== "string" || typeof msg.turnID !== "string") throw new Error("Invalid params");
+      serviceState((st) => { st.ended.push(msg.turnID); for (const [k, t] of Object.entries(st.stops)) if (t === msg.turnID) delete st.stops[k]; });
+      return {};
+    }
     throw new Error(`unsupported cuabridge request: ${msg.type}`);
   },
   ...(E.NODE_REPL_ENABLE_AUDIO === "1" ? { emitAudio: async (url) => out.push({ type: "audio", mimeType: "audio/wav", data: url.slice(url.indexOf(",") + 1) }) } : {}),
@@ -157,7 +176,14 @@ async function handle(m) {
   }
   if (m.method === "tools/call" && m.params?.name === "js") {
     const { code, timeout_ms } = m.params.arguments;
-    record({ ev: "cell", timeout_ms, code: code.slice(0, 120), turn: m.params._meta?.["x-codex-turn-metadata"] });
+    const turnMeta = m.params._meta?.["x-codex-turn-metadata"];
+    record({ ev: "cell", timeout_ms, code: code.slice(0, 120), turn: turnMeta });
+    cellTurn = turnMeta?.turn_id ?? null;
+    nodeRepl.requestMeta = turnMeta ? { "x-codex-turn-metadata": turnMeta } : {};
+    if (E.FAKE_USER_STOP && cellTurn && code.includes("__cb") && serviceState().userStopTurn === undefined) // the user stops these apps during the first turn
+      serviceState((st) => { st.userStopTurn = cellTurn; for (const a of E.FAKE_USER_STOP.split(",").filter(Boolean)) for (const k of [a, `com.example.${a}`]) st.stops[k.toLowerCase()] = cellTurn; });
+    if (cellTurn && code.includes("__cb") && serviceState().ended.includes(cellTurn))
+      return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: ENDED }], isError: true } });
     if (E.FAKE_CRASH_ONCE && code.includes("__cb") && !fs.existsSync(E.FAKE_CRASH_ONCE)) { fs.writeFileSync(E.FAKE_CRASH_ONCE, ""); process.exit(3); }
     if (E.FAKE_HANG && code.includes("__cb")) return; // never answers
     if (code.includes("__cb")) await sleep(Number(E.FAKE_CELL_DELAY_MS || 0));

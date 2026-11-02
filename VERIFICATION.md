@@ -1,3 +1,38 @@
+# Audit — 1.0.1 against ChatGPT 26.1023 (2026-11-02)
+
+**Machine:** macOS (Darwin 27.0.0). ChatGPT.app 26.1023.50603 (installed
+2026-10-28), Codex Computer Use.app 26.1022.1001641, `@oai/cua-repl` 0.1.2,
+`@oai/cua` 0.2.6, `@oai/sky` 0.7.13. Live runs used a stdio MCP client driving
+this checkout's `src/shim.mjs` against the real service; fixtures were a
+scratch TextEdit file, Calculator, Chess, Grapher and Dictionary.
+
+**Still working unchanged:** all 15 desktop tools (`list_apps`; `get_app_state`
+in full/diff/text/screenshot; click by index and coordinates; ASCII and
+non-ASCII `type_text`; paste; press_key; scroll; drag; set_value;
+perform_secondary_action; batch; run_cua_js; reset_repl; audio start/stop with
+and without inline WAV), Record & Replay status, Computer History status and
+settings, doctor. The `cua` API keys (`getApp`, `listApps`, `computer.*`,
+`nodeRepl.rpc/requestMeta/emitAudio`) and the native client's tool names are
+the same. `select_text` on Dictionary's search field returned the engine's own
+"does not support a settable selected text range", which is correct for that
+element.
+
+**Broken by the update, fixed here:**
+
+| Finding | Evidence | Fix | Proof |
+| --- | --- | --- | --- |
+| `stop_app` blocked the app for every client, ChatGPT included, until the service restarts | After `stop_app TextEdit` the next `get_app_state` failed ("explicitly stopped by the user for this turn"), and so did a new shim process 60 s later. Raw IPC probes: a stop is keyed to the stop request's `codexTurnMetadata`; `ComputerUseIPCCodexTurnEndedRequest {threadID, turnID}` for that turn clears it; a stop without metadata survived every TurnEnded, engine restarts and an app relaunch | `stop_app` sends `nodeRepl.requestMeta["x-codex-turn-metadata"]`; the trusted service gained `turnEnded`; a turn with a stop is ended at the service when it ends (and on exit), then the engine is replaced as before | Live: `stop_app Dictionary` → same session `get_app_state` OK (925 ms) → a second session OK. Tests: 5 new/changed, each fails with the fix removed |
+| Ended turn ids are refused for every client | After TurnEnded for turn "u1", a request from another thread with turn "u1" got "the current turn ended"; thread V turn "v1" was fine | Turn ids are fresh UUIDs | Test "a stop that the service keeps is gone … every other one" fails with numeric ids |
+| First-use docs lost OpenAI's core API before the engine starts | `oai-cua://engine/first-use` returned 5,567 chars, only the confirmations policy: `tinysky-alt-core-cua-repl.md` became `…-core-cua-repl-{mac,linux,windows,no-cua}.md` on 2026-10-28 | Read the `-mac` file (old name as fallback); list no `-linux`/`-windows` docs | Live: 19,915 chars with the API; doctor 27 docs (was 31 with the other platforms). Test fixture uses the new layout |
+
+**Not reproducible here:** the menu-bar stop itself (no safe way to trigger it
+in a test). The fix ends the turn in which the shim saw a user stop, which
+matches the service's per-turn keying measured above.
+
+**Left behind by this audit:** before the fix, `stop_app` and the raw probes
+left TextEdit, Calculator, Chess and Grapher stopped with no turn. Only a
+restart of `SkyComputerUseService` clears that.
+
 # Verification — v0.2 (2026-10-19)
 
 > Project renamed to oai-cua on 2026-10-20. Names below were updated to the

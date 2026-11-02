@@ -24,7 +24,12 @@ const text = (v, name) => {
   return v;
 };
 
-const ALLOWED = new Set(["resolve", "stopApp"]); // never TurnEnded: it blocks every other client
+// TurnEnded is safe because every turn id is fresh: the service refuses
+// requests in an ended turn id, from any client, and only those.
+const ALLOWED = new Set(["resolve", "stopApp", "turnEnded"]);
+// The Codex turn a request belongs to (x-codex-turn-metadata). A stop is kept
+// until that turn ends; a stop without one is kept until the service restarts.
+const meta = (m) => (m && typeof m === "object" && !Array.isArray(m) ? { codexMetadata: m } : {});
 
 export async function handleRpc(msg) {
   if (!ALLOWED.has(msg?.type)) throw new Error(`unsupported cuabridge request: ${msg?.type}`);
@@ -39,8 +44,12 @@ export async function handleRpc(msg) {
       const p = await c.getAppPolicy(text(msg.app, "app"));
       const appPath = p?.target?.appPath;
       if (!appPath) throw new Error(`no app path for ${msg.app}`);
-      const r = await c.request("ComputerUseIPCAppStopRequest", { app: appPath }, { timeoutSeconds: 10 });
+      const r = await c.request("ComputerUseIPCAppStopRequest", { app: appPath }, { timeoutSeconds: 10, ...meta(msg.meta) });
       return { bundleIdentifier: p.target.bundleIdentifier, displayName: p.target.displayName, active: r?.active ?? null };
+    }
+    case "turnEnded": { // clears the stops made in this turn (what Codex's turn-ended notify does)
+      await c.request("ComputerUseIPCCodexTurnEndedRequest", { threadID: text(msg.threadID, "threadID"), turnID: text(msg.turnID, "turnID") }, { timeoutSeconds: 10, ...meta(msg.meta) });
+      return {};
     }
     default:
       throw new Error(`unsupported cuabridge request: ${msg?.type}`);

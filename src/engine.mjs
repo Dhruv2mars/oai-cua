@@ -48,24 +48,25 @@ export class Engine {
   // Run a JavaScript cell. Resolves { content, isError }; rejects EngineError.
   // A cancelled cell is skipped if still queued; if running, its engine is
   // stopped so the action cannot complete later. allowAudio lets this cell's
-  // audio-recording approval through; every other cell's is declined.
-  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false } = {}) {
-    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio);
+  // audio-recording approval through; every other cell's is declined. With
+  // turn: false the cell carries no turn metadata (and does not use a turn).
+  run(code, timeoutMs = this.callTimeoutMs, signal, { allowAudio = false, turn = true } = {}) {
+    return this.#enqueue("js", { code, timeout_ms: timeoutMs }, timeoutMs, signal, allowAudio, turn);
   }
 
   // Discard the REPL's JavaScript bindings (cua-repl's js_reset). Resolves
   // false when no engine is running, i.e. the next cell starts fresh anyway.
   reset(signal) {
     if (!this.running) return Promise.resolve(false);
-    return this.#enqueue("js_reset", {}, this.callTimeoutMs, signal, false).then(() => true);
+    return this.#enqueue("js_reset", {}, this.callTimeoutMs, signal, false, false).then(() => true);
   }
 
-  #enqueue(tool, args, timeoutMs, signal, allowAudio) {
+  #enqueue(tool, args, timeoutMs, signal, allowAudio, withTurn) {
     this.busy++;
     clearTimeout(this.idleTimer);
     const job = this.queue.then(() => {
       if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
-      return this.#exec(tool, args, timeoutMs, signal, allowAudio);
+      return this.#exec(tool, args, timeoutMs, signal, allowAudio, withTurn);
     });
     this.queue = job.catch(() => {});
     return job.finally(() => { this.busy--; this.#armIdle(); });
@@ -88,13 +89,13 @@ export class Engine {
     this.#armIdle();
   }
 
-  async #exec(tool, args, timeoutMs, signal, allowAudio) {
+  async #exec(tool, args, timeoutMs, signal, allowAudio, withTurn) {
     const inst = await this.#ensure();
     if (signal?.aborted) throw new EngineError("cancelled", "CANCELLED");
     const onAbort = () => this.#retire(inst, "cancelled");
     signal?.addEventListener("abort", onAbort, { once: true });
     inst.allowAudio = allowAudio;
-    const turn = tool === "js" ? this.turnMeta() : null;
+    const turn = withTurn ? this.turnMeta() : null;
     const r = await this.#request(inst, "tools/call", { name: tool, arguments: args, ...(turn ? { _meta: { "x-codex-turn-metadata": turn } } : {}) }, timeoutMs + Math.min(10000, timeoutMs), true)
       .finally(() => { inst.allowAudio = false; signal?.removeEventListener("abort", onAbort); });
     if (r.error) throw new EngineError(`engine error: ${r.error.message || JSON.stringify(r.error)}`, "ENGINE_RPC");
@@ -249,9 +250,8 @@ export class Engine {
   }
 
   // Tells cua-repl's trusted libraries that a turn ended (no-op when no engine
-  // runs). The service's own TurnEnded request is deliberately not sent: it
-  // makes the service refuse every other client ("the current turn ended")
-  // until this engine exits. Stops are cleared by replacing the engine instead.
+  // runs), as Codex's Stop hook does. On macOS that does not reach the service;
+  // the shim sends the service's TurnEnded itself for turns with a stop.
   async endTurn({ thread, turn }) {
     const inst = this.cur;
     if (!inst || inst.dead || inst.retired || inst.replaced) return false; // a replaced engine's turn ends with it

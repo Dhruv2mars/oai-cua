@@ -60,8 +60,18 @@ function startShim(sb) {
 }
 const textOf = (r) => r.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
 const elicitations = (s) => s.received.filter((m) => m.method === "elicitation/create");
-// Turn ids of bridge tool cells (not the turn-end cells).
-const toolTurns = (sb) => sb.events().filter((e) => e.ev === "cell" && e.turn && !e.code.startsWith("await nodeRepl.rpc(")).map((e) => e.turn.turn_id);
+// Turns of bridge tool cells (not the turn-end cells), numbered in order of first use.
+// Turn ids are fresh UUIDs: the service treats an ended turn id as ended for every client.
+const toolTurns = (sb) => {
+  const ids = sb.events().filter((e) => e.ev === "cell" && e.turn && !e.code.startsWith("await nodeRepl.rpc(")).map((e) => e.turn.turn_id);
+  for (const id of ids) expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  const seen = [...new Set(ids)];
+  return ids.map((id) => String(seen.indexOf(id) + 1));
+};
+const turnMetaOf = (sb, n) => { // the metadata the n-th turn's cells carried
+  const cells = sb.events().filter((e) => e.ev === "cell" && e.turn);
+  return cells.find((e) => e.turn.turn_id === [...new Set(cells.map((c) => c.turn.turn_id))][n - 1]).turn;
+};
 
 describe("per-app approval", () => {
   test("forwarded to an elicitation-capable client with app, risk and always-allow; always persists 0600", async () => {
@@ -165,7 +175,7 @@ describe("per-app approval", () => {
 });
 
 describe("stop, takeover and turns", () => {
-  test("every cell carries this session's turn; stop_app stops the app, ends the turn and replaces the engine", async () => {
+  test("every cell carries this session's turn; stop_app stops the app in that turn, ends the turn at the service and replaces the engine", async () => {
     const sb = sandbox(), s = startShim(sb);
     await s.init();
     expect(textOf(await s.call("stop_app", {}))).toBe("No app sessions to stop."); // engine not started for this
@@ -175,8 +185,13 @@ describe("stop, takeover and turns", () => {
     await s.call("list_apps");
     const ev = sb.events();
     expect(toolTurns(sb)).toEqual(["1", "1", "2"]);
-    // never the service's TurnEnded: it would block every other client
-    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "stopApp", app: "TextEdit" }]);
+    const t1 = turnMetaOf(sb, 1);
+    expect(t1.session_id).toBe(t1.thread_id);
+    // The stop carries its turn, and that turn is then ended at the service, which clears the stop.
+    expect(ev.filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([
+      { type: "stopApp", app: "TextEdit", meta: t1 },
+      { type: "turnEnded", threadID: t1.thread_id, turnID: t1.turn_id, meta: t1 },
+    ]);
     expect(ev.filter((e) => e.ev === "turn_ended").length).toBe(0); // the replaced engine's turn ends with it, no turn_ended racing its shutdown
     expect(fs.readFileSync(path.join(sb.state, "shim.log"), "utf8")).not.toMatch(/turn 1 ended \(/);
     expect(new Set(ev.map((e) => e.pid)).size).toBe(2); // list_apps ran on a fresh engine
@@ -190,13 +205,24 @@ describe("stop, takeover and turns", () => {
     expect(textOf(await s.call("stop_app", {}))).toBe("Stopped TextEdit (com.example.TextEdit).\nStopped Notes (com.example.Notes).");
   });
 
-  test("a stop that the service keeps is gone after stop_app: the next call runs on a fresh engine", async () => {
+  test("a stop that the service keeps is gone after stop_app, for this session and every other one", async () => {
     const sb = sandbox({ FAKE_STICKY_STOP: "1" }), s = startShim(sb);
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await s.call("stop_app", { app: "TextEdit" });
     expect((await s.call("get_app_state", { app: "com.example.TextEdit" })).isError).toBeUndefined();
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
+    const other = startShim(sb); // another Claude session on the same service
+    await other.init();
+    expect((await other.call("get_app_state", { app: "TextEdit" })).isError).toBeUndefined();
+  });
+
+  test("a stop sent without its turn would outlive every engine (why stop_app sends the turn)", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_ENABLE_JS: "1" }), s = startShim(sb);
+    await s.init();
+    await s.call("run_cua_js", { code: `await nodeRepl.rpc("cuabridge", { type: "stopApp", app: "TextEdit" })` });
+    await s.call("stop_app", { app: "Notes" }); // ends the turn at the service and replaces the engine
+    expect(textOf(await s.call("get_app_state", { app: "TextEdit" }))).toContain("The user stopped Computer Use");
   });
 
   test("a user stop is honoured for the rest of the turn and cleared when it ends; nothing is retried", async () => {
@@ -232,8 +258,48 @@ describe("stop, takeover and turns", () => {
     expect(new Set(sb.events().map((e) => e.pid)).size).toBe(2);
   });
 
-  test("the trusted bridge service refuses TurnEnded (it would block every other client)", async () => {
-    await expect(handleRpc({ type: "turnEnded", threadID: "t", turnID: "1" })).rejects.toThrow("unsupported cuabridge request: turnEnded");
+  test("the trusted bridge service sends the service's own request shapes, with the turn", async () => {
+    // A stand-in for OpenAI's IPC client, loaded from OAI_CUA_NODE_MODULES like the real one.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cuabridge-"));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = path.join(dir, "@oai/sky/dist/project/cua/sky_js/src/targets/mac/client.js");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `export const sent = [];
+export const client = {
+  async getAppPolicy(app) { return { decision: "allowed", target: { appPath: "/Apps/" + app + ".app", bundleIdentifier: "com.x." + app, displayName: app } }; },
+  async request(type, body, opts) { sent.push({ type, body, opts }); return type === "ComputerUseIPCAppStopRequest" ? { active: false } : {}; },
+};`);
+    const prev = process.env.OAI_CUA_NODE_MODULES;
+    process.env.OAI_CUA_NODE_MODULES = dir;
+    try {
+      const meta = { session_id: "s", thread_id: "s", turn_id: "t" };
+      expect(await handleRpc({ type: "stopApp", app: "Notes", meta })).toEqual({ bundleIdentifier: "com.x.Notes", displayName: "Notes", active: false });
+      await handleRpc({ type: "stopApp", app: "Notes", meta: null });
+      expect(await handleRpc({ type: "turnEnded", threadID: "s", turnID: "t", meta })).toEqual({});
+      await expect(handleRpc({ type: "turnEnded", threadID: "s" })).rejects.toThrow("turnID must be a non-empty string");
+      await expect(handleRpc({ type: "endTurn" })).rejects.toThrow("unsupported cuabridge request: endTurn");
+      const { sent } = await import(file);
+      expect(sent).toEqual([
+        { type: "ComputerUseIPCAppStopRequest", body: { app: "/Apps/Notes.app" }, opts: { timeoutSeconds: 10, codexMetadata: meta } },
+        { type: "ComputerUseIPCAppStopRequest", body: { app: "/Apps/Notes.app" }, opts: { timeoutSeconds: 10 } },
+        { type: "ComputerUseIPCCodexTurnEndedRequest", body: { threadID: "s", turnID: "t" }, opts: { timeoutSeconds: 10, codexMetadata: meta } },
+      ]);
+    } finally {
+      if (prev === undefined) delete process.env.OAI_CUA_NODE_MODULES; else process.env.OAI_CUA_NODE_MODULES = prev;
+    }
+  });
+
+  test("a session that ends inside a stopped turn ends that turn at the service", async () => {
+    const sb = sandbox({ FAKE_USER_STOP: "TextEdit" }), s = startShim(sb);
+    await s.init();
+    expect(textOf(await s.call("press_key", { app: "TextEdit", key: "a" }))).toContain("The user stopped Computer Use");
+    const t1 = turnMetaOf(sb, 1);
+    s.p.stdin.end();
+    await new Promise((r) => s.p.on("exit", r));
+    expect(sb.events().filter((e) => e.ev === "rpc").map((e) => e.msg)).toEqual([{ type: "turnEnded", threadID: t1.thread_id, turnID: t1.turn_id, meta: t1 }]);
+    const next = startShim(sb); // the app works for the next session
+    await next.init();
+    expect((await next.call("press_key", { app: "TextEdit", key: "a" })).isError).toBeUndefined();
   });
 
   test("the turn ends after Claude goes quiet", async () => {
@@ -241,8 +307,8 @@ describe("stop, takeover and turns", () => {
     await s.init();
     await s.call("get_app_state", { app: "TextEdit" });
     await sleep(500);
-    const thread = sb.events().find((e) => e.ev === "cell" && e.turn).turn.thread_id;
-    expect(sb.events().filter((e) => e.ev === "turn_ended").map((e) => e.args)).toEqual([{ hook_event_name: "Stop", session_id: thread, turn_id: "1" }]);
+    const t1 = turnMetaOf(sb, 1);
+    expect(sb.events().filter((e) => e.ev === "turn_ended").map((e) => e.args)).toEqual([{ hook_event_name: "Stop", session_id: t1.thread_id, turn_id: t1.turn_id }]);
     expect(sb.events().filter((e) => e.ev === "rpc").length).toBe(0); // no service TurnEnded
     await s.call("get_app_state", { app: "TextEdit" });
     expect(toolTurns(sb)).toEqual(["1", "2"]);

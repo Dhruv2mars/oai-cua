@@ -28,37 +28,50 @@ const log = logger("shim.log");
 const approver = new Approver({ log }); // per-app approval (approval.mjs)
 const focus = new FocusGuard({ log });  // undoes focus theft by the target app (focus.mjs)
 
-// Turns. Every cell carries this session's turn id. MCP has no turn
-// boundary, so a turn ends when Claude goes quiet (OAI_CUA_TURN_IDLE_MS,
+// Turns. Every cell carries this session's turn (a fresh turn id each time:
+// the service treats an ended turn id as ended for every client). MCP has no
+// turn boundary, so a turn ends when Claude goes quiet (OAI_CUA_TURN_IDLE_MS,
 // default 60s), when a call is cancelled (the user interrupted Claude), or
-// after stop_app. A stop (the user's, or stop_app's) lasts until the
-// service's connection to this engine closes; the service's own turn-end
-// request would clear it but blocks every other client (see engine.endTurn).
-// So stop_app replaces the engine at once, and a turn in which the user's
-// stop was seen replaces it when the turn ends: the app works again in the
-// next turn, and nothing is ever retried.
+// after stop_app. A stop (the user's, or stop_app's, which is sent with this
+// turn's metadata) belongs to the turn it was made in. The service keeps it,
+// across engines and sessions, until it hears that this turn ended: so a turn
+// with a stop is ended at the service (TurnEnded) when it ends, and the engine
+// is replaced too, which is what cleared stops before ChatGPT 26.1022. The
+// app works again in the next turn, and nothing is ever retried.
 const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
-const turn = { thread: randomUUID(), n: 1, used: false, timer: null, active: 0, stopped: false };
-let clearStops = false; // replace the engine when it can (a recording holds it)
+const turn = { thread: randomUUID(), n: 1, id: randomUUID(), used: false, timer: null, active: 0, stopped: false };
+const stoppedTurns = []; // ended turns with a stop the service still holds (a recording defers clearing it)
+const turnMeta = (t) => ({ session_id: t.thread, thread_id: t.thread, turn_id: t.id });
 async function endTurn(why) {
   clearTimeout(turn.timer);
   if (!turn.used) return;
-  const ended = { thread: turn.thread, turn: String(turn.n) };
+  const ended = { thread: turn.thread, id: turn.id, n: turn.n };
   turn.n++;
+  turn.id = randomUUID();
   turn.used = false;
-  if (turn.stopped) clearStops = true;
+  if (turn.stopped) stoppedTurns.push(ended);
   turn.stopped = false;
-  log(`turn ${ended.turn} ends: ${why}`);
-  const releasing = releaseStops(`stops from turn ${ended.turn}`); // queued before any new call, and before endTurn looks at the engine
-  await Promise.all([releasing, engine.endTurn(ended).catch((e) => log(`turn end failed: ${e.message}`))]);
+  log(`turn ${ended.n} ends: ${why}`);
+  const releasing = releaseStops(`stops from turn ${ended.n}`); // queued before any new call, and before endTurn looks at the engine
+  await Promise.all([releasing, engine.endTurn({ thread: ended.thread, turn: ended.id }).catch((e) => log(`turn end failed: ${e.message}`))]);
+}
+// Tells the service that these turns ended, which clears their stops. Runs on
+// the current engine, or starts one; failures are logged.
+function serviceTurnsEnded(turns) {
+  if (!turns.length) return Promise.resolve();
+  const msgs = turns.map((t) => ({ type: "turnEnded", threadID: t.thread, turnID: t.id, meta: turnMeta(t) }));
+  const cell = `{ for (const m of ${JSON.stringify(msgs)}) await nodeRepl.rpc("cuabridge", m); }`;
+  return engine.run(cell, 15000, undefined, { turn: false })
+    .then((r) => r.isError && log(`service turn end failed: ${String(r.content[0]?.text ?? "").slice(0, 300)}`))
+    .catch((e) => log(`service turn end failed: ${e.message}`));
 }
 async function releaseStops(why) {
-  if (!engine.running) clearStops = false; // its connection is gone, and its stops with it
-  if (!clearStops || engine.recording) return;
-  clearStops = false;
+  if (!stoppedTurns.length || engine.recording) return;
+  const turns = stoppedTurns.splice(0);
   observations.forget();
-  log(`replacing the engine to clear ${why}`);
-  await engine.recycle("clear stops");
+  log(`ending turn ${turns.map((t) => t.n).join(", ")} at the service and replacing the engine to clear ${why}`);
+  // Both are queued now, in this order, so no new call runs in between.
+  await Promise.all([serviceTurnsEnded(turns), engine.recycle("clear stops")]);
 }
 
 // Did the user's stop refuse this call?
@@ -75,7 +88,7 @@ const engine = new Engine({
   audio: process.env.OAI_CUA_AUDIO !== "0",
   approve: (params, signal) => approver.decide(params, signal),
   // session_id is what the service keys turns (and their stops) on.
-  turnMeta: () => { turn.used = true; return { session_id: turn.thread, thread_id: turn.thread, turn_id: String(turn.n) }; },
+  turnMeta: () => { turn.used = true; return turnMeta(turn); },
 });
 const browser = new HeliumBrowser({ log });
 const browserTools = () => BROWSER_TOOLS.map(({ readOnly, ...t }) => ({ ...t, annotations: { readOnlyHint: !!readOnly, openWorldHint: true } }));
@@ -164,9 +177,8 @@ export async function callTool(name, args = {}, signal) {
     const r = await execute(name, args, signal);
     if (name === "stop_app") { // released without leaving the app blocked; new session, new indices
       observations.forget(args.app);
-      clearStops = true;
-      await endTurn("stop_app");
-      await releaseStops("stop_app"); // also when the turn had no other calls
+      turn.stopped = true;
+      await endTurn("stop_app"); // its cell carried this turn, so the turn ends with the stop in it
     }
     return r;
   } finally {
@@ -315,6 +327,9 @@ function serve() {
     log(`shim exit: ${why}`);
     service.stop(why);
     focus.stop();
+    // Stops this session made would otherwise outlive it at the service.
+    if (turn.stopped && turn.used) stoppedTurns.push({ thread: turn.thread, id: turn.id, n: turn.n });
+    await Promise.race([serviceTurnsEnded(stoppedTurns.splice(0)), new Promise((r) => setTimeout(r, 4000))]);
     await Promise.all([engine.stop(why), browser.close()]);
     process.exit(0);
   };

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 (2026-11-02)
+
+Fixes for ChatGPT 26.1022/26.1023, whose computer-use service and docs changed.
+
+- `stop_app` no longer blocks the app for good. The service now keeps a stop until it hears that the stop's turn ended, across engines and sessions. A stop without a turn, which 1.0.0 sent, blocked the app for every client, ChatGPT included, until the service restarted. `stop_app` now sends its turn, and a turn with a stop (including one of yours) is ended at the service when it ends, or when the session exits.
+- Turn ids are unique per turn. The service refuses an ended turn id for every client, so the old per-session `1, 2, …` ids could block another session.
+- `oai-cua://engine/first-use`, read before the engine starts, includes OpenAI's core API doc again (now `…-core-cua-repl-mac.md`), and the Linux and Windows copies are no longer listed as resources.
+
 ## 1.0.0 (2026-10-21)
 
 First stable release.
