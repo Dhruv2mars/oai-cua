@@ -21,6 +21,21 @@ describe("plugin", () => {
     expect(publishCommand(false)).toEqual(["script", ["-q", "/dev/null", "npm", "publish", "--browser=false"]]);
   });
 
+  test("a signal to the release reaches the publisher it started", async () => {
+    const { spawn } = await import("node:child_process");
+    const code = `import { run } from ${JSON.stringify(path.join(ROOT, "scripts/release.mjs"))};
+const p = run("/bin/sleep", ["30"], false); setTimeout(() => process.stdout.write("started\\n"), 200); process.exitCode = await p;`;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise((r) => parent.stdout.once("data", r));
+    const child = spawn("/usr/bin/pgrep", ["-P", String(parent.pid)]);
+    const pid = Number((await new Promise((r) => { let o = ""; child.stdout.on("data", (d) => (o += d)); child.on("close", () => r(o)); })).trim());
+    expect(pid).toBeGreaterThan(0);
+    parent.kill("SIGTERM");
+    await new Promise((r) => parent.on("exit", r));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(() => process.kill(pid, 0)).toThrow(); // the sleep is gone too
+  });
+
   test("CHANGELOG.md has a section for this version (the release notes)", () => {
     expect(changelogSection(fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8"), pkg.version)).toBeTruthy();
     expect(changelogSection("## 1.0.0 (x)\nA\n## 1.0.1\nB", "1.0.1")).toBe("B");

@@ -49,8 +49,9 @@ async function publish() {
   sh("git", ["push", "origin", tag]);
   // npm asks for 2FA in the browser (web login). On a terminal it offers to open
   // its config "browser"; without one it prints the URL to open and waits.
-  if (!process.stdin.isTTY) console.log("npm will print an authentication URL: open it in your browser and approve; npm then finishes.");
-  const code = await run(...publishCommand(!!process.stdin.isTTY));
+  const tty = !!(process.stdin.isTTY && process.stdout.isTTY); // npm needs both for its 2FA prompt
+  if (!tty) console.log("npm will print an authentication URL: open it in your browser and approve; npm then finishes.");
+  const code = await run(...publishCommand(tty), tty);
   if (code !== 0) die(`npm publish exited with ${code}; tag ${tag} is pushed, so rerun just: npm publish`);
   console.log(`Released ${tag}: npm ${JSON.parse(read("package.json")).name}@${version}.`);
 }
@@ -60,10 +61,16 @@ async function publish() {
 // with --browser=false so it prints the URL and polls instead of reading stdin.
 export const publishCommand = (tty) => (tty ? ["npm", ["publish"]] : ["script", ["-q", "/dev/null", "npm", "publish", "--browser=false"]]);
 
-const run = (cmd, args) => new Promise((resolve) => {
-  const p = spawn(cmd, args, { cwd: ROOT, stdio: [process.stdin.isTTY ? "inherit" : "ignore", "inherit", "inherit"] });
-  p.on("exit", (c, sig) => resolve(c ?? (sig ? 1 : 0)));
-  p.on("error", (e) => { console.error(e.message); resolve(1); });
+// Signals reach the publisher too, so a cancelled release can't still publish
+// once the browser approval goes through.
+export const run = (cmd, args, tty) => new Promise((resolve) => {
+  const p = spawn(cmd, args, { cwd: ROOT, stdio: [tty ? "inherit" : "ignore", "inherit", "inherit"] });
+  const forward = (sig) => p.kill(sig);
+  const sigs = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const sig of sigs) process.on(sig, forward);
+  const done = (code) => { for (const sig of sigs) process.off(sig, forward); resolve(code); };
+  p.on("exit", (c, sig) => done(c ?? (sig ? 1 : 0)));
+  p.on("error", (e) => { console.error(e.message); done(1); });
 });
 
 if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? "")) {
