@@ -3,7 +3,8 @@
 // cells against a fake `cua` API and records every call in $FAKE_LOG.
 // Knobs (env): FAKE_INIT_DELAY_MS, FAKE_INIT_ERROR, FAKE_AUTH_FAIL,
 // FAKE_SPLIT (byte-by-byte stdout), FAKE_CRASH_ONCE (file path),
-// FAKE_SLOW_EXIT_MS, FAKE_ELICIT, FAKE_HANG, FAKE_CELL_DELAY_MS,
+// FAKE_SLOW_EXIT_MS, FAKE_ELICIT, FAKE_HANG, FAKE_CELL_DELAY_MS (bridge cells),
+// FAKE_TURN_END_DELAY_MS (the bridge's turn-end cells),
 // FAKE_IGNORE_TERM (ignores SIGTERM/EOF and spawns a grandchild),
 // FAKE_AUDIO_ELICIT_ON_CLICK (a click also asks to record audio), FAKE_WAV_BYTES,
 // FAKE_DOCS (first-use docs text; "" disables), FAKE_REPL_RESET (file path:
@@ -201,7 +202,7 @@ async function handle(m) {
       return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: ENDED }], isError: true } });
     if (E.FAKE_CRASH_ONCE && code.includes("__cb") && !fs.existsSync(E.FAKE_CRASH_ONCE)) { fs.writeFileSync(E.FAKE_CRASH_ONCE, ""); process.exit(3); }
     if (E.FAKE_HANG && code.includes("__cb")) return; // never answers
-    if (code.includes("__cb")) await sleep(Number(E.FAKE_CELL_DELAY_MS || 0));
+    if (code.includes("__cb")) await sleep(Number((code.includes('"turnEnded"') ? E.FAKE_TURN_END_DELAY_MS : E.FAKE_CELL_DELAY_MS) || 0));
     out = [];
     let docs = fresh ? DOCS : "";
     fresh = false;

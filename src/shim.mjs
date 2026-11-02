@@ -42,6 +42,7 @@ const focus = new FocusGuard({ log });  // undoes focus theft by the target app 
 const TURN_IDLE_MS = Number(process.env.OAI_CUA_TURN_IDLE_MS ?? 60000);
 const turn = { thread: randomUUID(), n: 1, id: randomUUID(), used: false, timer: null, active: 0, stopped: false };
 const unended = []; // ended turns the service has not been told about yet (a recording defers it)
+const telling = new Set(); // turn-end cells queued or running, which exit waits for
 const turnMeta = (t) => ({ session_id: t.thread, thread_id: t.thread, turn_id: t.id });
 async function endTurn(why) {
   clearTimeout(turn.timer);
@@ -63,9 +64,12 @@ function serviceTurnsEnded(turns) {
   const msgs = turns.map((t) => ({ type: "turnEnded", threadID: t.thread, turnID: t.id, meta: turnMeta(t) }));
   // The app handles of those sessions are dead now; the next cell gets new ones.
   const cell = `{ for (const m of ${JSON.stringify(msgs)}) await nodeRepl.rpc("cuabridge", m); globalThis.__cb?.apps.clear(); }`;
-  return engine.run(cell, 15000, undefined, { turn: false })
+  const p = engine.run(cell, 15000, undefined, { turn: false })
     .then((r) => r.isError && log(`service turn end failed: ${String(r.content[0]?.text ?? "").slice(0, 300)}`))
-    .catch((e) => log(`service turn end failed: ${e.message}`));
+    .catch((e) => log(`service turn end failed: ${e.message}`))
+    .finally(() => telling.delete(p));
+  telling.add(p);
+  return p;
 }
 async function releaseTurns(why) {
   if (!unended.length || engine.recording) return; // ending a turn could end the recording's session
@@ -330,9 +334,12 @@ function serve() {
     log(`shim exit: ${why}`);
     service.stop(why);
     focus.stop();
-    // Its app sessions (and stops on them) would otherwise outlive it at the service.
+    // Its app sessions (and stops on them) would otherwise outlive it at the
+    // service: cancel what is running, then end every turn not yet ended.
+    for (const ac of inflight.values()) ac.abort();
     if (turn.used) unended.push({ thread: turn.thread, id: turn.id, n: turn.n });
-    await Promise.race([serviceTurnsEnded(unended.splice(0)), new Promise((r) => setTimeout(r, 4000))]);
+    serviceTurnsEnded(unended.splice(0));
+    await Promise.race([Promise.all([...telling]), new Promise((r) => setTimeout(r, 4000))]);
     await Promise.all([engine.stop(why), browser.close()]);
     process.exit(0);
   };

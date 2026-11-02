@@ -317,6 +317,28 @@ export const client = {
     expect(sb.events().filter((e) => e.ev === "action").map((e) => e.method)).toEqual(["pressKey", "click"]); // each ran once
   });
 
+  test("exit waits for a turn end already under way", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", OAI_CUA_TURN_IDLE_MS: "100", FAKE_TURN_END_DELAY_MS: "400" }), s = startShim(sb);
+    await s.init();
+    await s.call("get_app_state", { app: "TextEdit" });
+    await sleep(250); // the idle turn end is running
+    s.p.stdin.end();
+    await new Promise((r) => s.p.on("exit", r));
+    expect(sb.events().filter((e) => e.ev === "rpc" && e.msg.type === "turnEnded").length).toBe(1);
+  });
+
+  test("exit cancels a long call so the turn still ends at the service", async () => {
+    const sb = sandbox({ FAKE_STICKY_STOP: "1", FAKE_CELL_DELAY_MS: "10000" }), s = startShim(sb);
+    await s.init();
+    s.rpc("tools/call", { name: "press_key", arguments: { app: "TextEdit", key: "a" } }); // never answered
+    await sleep(300);
+    const t = Date.now();
+    s.p.stdin.end();
+    await new Promise((r) => s.p.on("exit", r));
+    expect(Date.now() - t).toBeLessThan(4000);
+    expect(sb.events().filter((e) => e.ev === "rpc" && e.msg.type === "turnEnded").length).toBe(1);
+  });
+
   test("a session that exits ends its turn at the service, stopped or not", async () => {
     const sb = sandbox({ FAKE_USER_STOP: "TextEdit" }), s = startShim(sb);
     await s.init();
