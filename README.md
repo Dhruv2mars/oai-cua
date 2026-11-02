@@ -14,10 +14,13 @@ inside the ChatGPT app, so a ChatGPT update can break it until a fix ships
 
 ## Install
 
-```
-/plugin marketplace add https://unpkg.com/@dhruv2mars/oai-cua/.claude-plugin/marketplace.json
-/plugin install oai-cua@oai-cua
-```
+1. **Installed oai-cua before 1.0.1 (from GitHub)?** Remove that first:
+   `/plugin marketplace remove oai-cua`. The GitHub copy can't update any
+   more. Removing it also deletes the plugin's options and data.
+2. Add the marketplace:
+   `/plugin marketplace add https://unpkg.com/@dhruv2mars/oai-cua/.claude-plugin/marketplace.json`
+3. Install, then restart Claude Code (or run `/reload-plugins`):
+   `/plugin install oai-cua@oai-cua`
 
 The plugin is published on npm as [`@dhruv2mars/oai-cua`](https://www.npmjs.com/package/@dhruv2mars/oai-cua);
 the marketplace file comes from the newest release on unpkg, and Claude Code
@@ -50,11 +53,6 @@ New releases arrive when the version changes. Auto-update is off for
 third-party marketplaces; turn it on under `/plugin` → Marketplaces. **Uninstall:**
 `claude plugin uninstall oai-cua@oai-cua`. This also deletes the plugin's data
 directory (logs, screenshots, state) unless you pass `--keep-data`.
-
-**Installed from GitHub before 1.0.1:** the GitHub repository is gone, so that
-marketplace can't update. Run `claude plugin marketplace remove oai-cua`
-(this uninstalls the plugin and deletes its options and data), then the two
-install commands above.
 
 **Moving from the old `install.mjs` registration:** run
 `claude mcp remove -s user openai-computer-use` (or `oai-cua`, if you ran the
@@ -381,8 +379,11 @@ Bun runs the tests; the shim itself runs on Node with no dependencies. CI
 release bump <version>` sets the version in `package.json` and
 `.claude-plugin/plugin.json` (installed plugins only update when it changes);
 add its section to `CHANGELOG.md` and merge that. Then, on an up-to-date
-`main`, logged in to npm, `bun run release publish` runs the checks, tags
-`v<version>`, pushes the tag and publishes the npm package.
+`main`, logged in to npm (`npm login`; the login lasts a few days),
+`bun run release publish` runs the checks, tags `v<version>`, pushes the tag
+and publishes the npm package. npm then asks for your authenticator code in
+the browser: on a terminal press ENTER to open it; without one (an agent) the
+script prints the URL to open, and npm finishes once you approve.
 
 Environment overrides. The plugin sets the state dir and its three options; the
 rest are for development:

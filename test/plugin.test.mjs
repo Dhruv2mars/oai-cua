@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { changelogSection } from "../scripts/release.mjs";
+import { changelogSection, publishCommand } from "../scripts/release.mjs";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const json = (f) => JSON.parse(fs.readFileSync(path.join(ROOT, f), "utf8"));
@@ -14,6 +14,11 @@ const mcp = json(".mcp.json");
 describe("plugin", () => {
   test("plugin.json version matches package.json", () => {
     expect(plugin.version).toBe(pkg.version);
+  });
+
+  test("release publish gives npm a terminal when it has none, so its browser 2FA works", () => {
+    expect(publishCommand(true)).toEqual(["npm", ["publish"]]);
+    expect(publishCommand(false)).toEqual(["script", ["-q", "/dev/null", "npm", "publish", "--browser=false"]]);
   });
 
   test("CHANGELOG.md has a section for this version (the release notes)", () => {

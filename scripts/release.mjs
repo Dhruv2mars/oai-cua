@@ -4,7 +4,7 @@
 //   node scripts/release.mjs bump <version>   set both versions (then open a PR)
 //   node scripts/release.mjs publish          on an up-to-date main, logged in to npm:
 //                                             tag v<version>, push it, and npm publish
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,12 +32,12 @@ function bump(version) {
   console.log(`Set ${FILES.join(" and ")} to ${version}.`);
 }
 
-function publish() {
+async function publish() {
   const version = JSON.parse(read("package.json")).version;
   if (JSON.parse(read(".claude-plugin/plugin.json")).version !== version) die("package.json and plugin.json versions differ");
   const notes = changelogSection(read("CHANGELOG.md"), version);
   if (!notes) die(`CHANGELOG.md has no "## ${version}" section`);
-  if (sh("git", ["status", "--porcelain"])) die("the working tree is not clean");
+  if (sh("git", ["status", "--porcelain", "--untracked-files=no"])) die("the working tree has uncommitted changes");
   if (sh("git", ["rev-parse", "--abbrev-ref", "HEAD"]) !== "main") die("not on main");
   sh("git", ["fetch", "--quiet", "origin", "main", "--tags"]);
   if (sh("git", ["rev-parse", "HEAD"]) !== sh("git", ["rev-parse", "origin/main"])) die("main is not the same as origin/main");
@@ -47,13 +47,28 @@ function publish() {
   sh("bun", ["run", "check"], { stdio: "inherit" });
   sh("git", ["tag", "-a", tag, "-m", `${tag}\n\n${notes}`]);
   sh("git", ["push", "origin", tag]);
-  sh("npm", ["publish"], { stdio: "inherit" }); // public, per publishConfig; npm may ask for a one-time code
+  // npm asks for 2FA in the browser (web login). On a terminal it offers to open
+  // its config "browser"; without one it prints the URL to open and waits.
+  if (!process.stdin.isTTY) console.log("npm will print an authentication URL: open it in your browser and approve; npm then finishes.");
+  const code = await run(...publishCommand(!!process.stdin.isTTY));
+  if (code !== 0) die(`npm publish exited with ${code}; tag ${tag} is pushed, so rerun just: npm publish`);
   console.log(`Released ${tag}: npm ${JSON.parse(read("package.json")).name}@${version}.`);
 }
+
+// npm only offers its browser 2FA flow on a terminal; without one (an agent,
+// a pipe) it fails with EOTP. So it runs under script(1), which gives it one,
+// with --browser=false so it prints the URL and polls instead of reading stdin.
+export const publishCommand = (tty) => (tty ? ["npm", ["publish"]] : ["script", ["-q", "/dev/null", "npm", "publish", "--browser=false"]]);
+
+const run = (cmd, args) => new Promise((resolve) => {
+  const p = spawn(cmd, args, { cwd: ROOT, stdio: [process.stdin.isTTY ? "inherit" : "ignore", "inherit", "inherit"] });
+  p.on("exit", (c, sig) => resolve(c ?? (sig ? 1 : 0)));
+  p.on("error", (e) => { console.error(e.message); resolve(1); });
+});
 
 if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? "")) {
   const [cmd, arg] = process.argv.slice(2);
   if (cmd === "bump") bump(arg);
-  else if (cmd === "publish") publish();
+  else if (cmd === "publish") await publish();
   else die("usage: release.mjs bump <version> | publish");
 }
