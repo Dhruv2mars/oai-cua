@@ -1,0 +1,30 @@
+name: CI
+
+# GitHub is a one-way mirror of the Entire repo (git mirror); this runs on every mirrored push. report.yml reports
+# each run to the Entire trail, whose merge gate requires it.
+on:
+  push:
+    branches-ignore: ['archive/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: node --version && bun --version
+      - run: bun run check
