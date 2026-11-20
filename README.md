@@ -1,5 +1,7 @@
 # oai-cua
 
+<sub>Developed on <a href="https://entire.com/et/dhruv2mars/oai-cua">Entire</a>. The GitHub copy is a read-only mirror for CI; open issues and changes on Entire.</sub>
+
 Use OpenAI's **computer-use engine** (the one ChatGPT/Codex desktop uses) from
 **Claude Code** on macOS: screenshots, accessibility trees and real input, run
 in the background without moving your cursor or changing the frontmost app.
