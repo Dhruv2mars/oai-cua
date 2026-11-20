@@ -377,7 +377,8 @@ claude --plugin-dir .   # load this checkout as the plugin
 ```
 
 Bun runs the tests; the shim itself runs on Node with no dependencies. CI
-(Buildkite) runs `bun run check` on Linux with Node 22. To release: `bun run
+(GitHub Actions on the read-only GitHub mirror, reported to the Entire trail)
+runs `bun run check` on macOS with Node 22. To release: `bun run
 release bump <version>` sets the version in `package.json` and
 `.claude-plugin/plugin.json` (installed plugins only update when it changes);
 add its section to `CHANGELOG.md` and merge that. Then, on an up-to-date
